@@ -14,6 +14,20 @@ UDef-ARP provides the basis for developing a benchmark model as well as tools fo
 3. At present, only limited bulletproofing has been done. Please read the UDef-A document carefully regarding required inputs.
 4. UDef-ARP is still under development. Frequent updates are expected.
 
+## Changelog (this fork)
+
+### Fix — modeling region ID overflow (`allocation_tool.py`)
+
+Modeling region IDs are computed as `vulnerability_class * 1000 + admin_division_id`.
+The original code cast these arrays to `numpy.int16` (max value 32 767).
+For jurisdictions where `admin_division_id > ~767` at vulnerability class 30
+(e.g., any state with hundreds of municipalities), the cast silently wraps around,
+producing wrong IDs throughout the relative-frequency table and all downstream outputs.
+
+**Fix:** both `tabulation_bin_id_HRP` and `tabulation_bin_id_VP` now cast to
+`numpy.int32` and write `GDT_Int32` rasters. `int32` supports up to ~32 million
+administrative divisions without overflow.
+
 ## Requirements
 ### Operating System
 The UDef-ARP is currently operational exclusively on Windows systems.

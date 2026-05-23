@@ -82,12 +82,17 @@ class AllocationTool(QObject):
         # Calculate tabulation bin id with mask
         tabulation_bin_id_masked = np.add(arr1*1000, arr2) * mask_arr_HRP
 
-        # Convert the array to signed 16-bit integer (int16) data type
-        tabulation_bin_id_masked = tabulation_bin_id_masked.astype(np.int16)
+        # FIX: int32 instead of int16.
+        # Modeling region IDs = vuln_class * 1000 + admin_id.
+        # int16 (max 32,767) overflows silently when admin_id > ~767 at
+        # vuln_class 30, corrupting the relative-frequency table.
+        # Affects any jurisdiction with hundreds of admin divisions.
+        # int32 supports up to ~32 M admin divisions without overflow.
+        tabulation_bin_id_masked = tabulation_bin_id_masked.astype(np.int32)
 
         # Create the final image using tabulation_bin_image function
         self.array_to_image(risk30_hrp, out_fn1, tabulation_bin_id_masked,
-                                     gdal.GDT_Int16, -1)
+                                     gdal.GDT_Int32, -1)
         return tabulation_bin_id_masked
 
 ###Step2 Calculate the Relative Frequencies###
@@ -188,11 +193,11 @@ class AllocationTool(QObject):
         # Calculate tabulation bin id of CNF/VP with mask
         tabulation_bin_id_VP_masked = np.add(arr4 * 1000, arr2) * mask_arr_VP
 
-        # Convert the array to signed 16-bit integer (int16) data type
-        tabulation_bin_id_VP_masked = tabulation_bin_id_VP_masked.astype(np.int16)
+        # FIX: int32 -- same overflow fix as tabulation_bin_id_HRP above.
+        tabulation_bin_id_VP_masked = tabulation_bin_id_VP_masked.astype(np.int32)
         #Write image to disk
         self.array_to_image(risk30_vp, out_fn1, tabulation_bin_id_VP_masked,
-                                     gdal.GDT_Int16, -1)
+                                     gdal.GDT_Int32, -1)
 
         return tabulation_bin_id_VP_masked
 
