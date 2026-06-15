@@ -30,7 +30,15 @@ expected_deforestation: 10000
 #   deforestation_cal: deforestation_cal.tif
 #   deforestation_hrp: deforestation_hrp.tif
 #   deforestation_cnf: deforestation_cnf.tif
-#   empirical_vulnerability: empirical_vulnerability_0_1.tif
+
+# Optional: compare one or more empirical vulnerability maps.
+# Put at least one file matching empirical_vulnerability_*.tif in
+# working_directory, or list maps explicitly here.
+# empirical_vulnerability_maps:
+#   - path: empirical_vulnerability_model_a.tif
+#     label: model_a
+#   - path: empirical_vulnerability_model_b.tif
+#     label: model_b
 
 # Optional: uncomment to run a custom subset/order.
 # stages:
@@ -45,8 +53,14 @@ expected_deforestation: 10000
 
 # Optional: alternative empirical vulnerability map.
 # stages:
-#   - name: vulnerability_alternative
-#     output: acre_vulnerability_alternative.tif
+#   - name: nrt
+#   - name: vulnerability_distance
+#     period: vp
+#   - name: empirical_vulnerability_comparison
+#     comparison_csv: acre_empirical_vulnerability_comparison.csv
+#     run_fit: true
+#     run_cnf: true
+#     run_vp: true
 
 # Optional: model evaluation plot and statistics.
 # stages:

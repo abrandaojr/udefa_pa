@@ -10,8 +10,10 @@ workflow stages without clicking through each screen.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 import yaml
@@ -40,6 +42,7 @@ LEGACY_BLOCK_NAMES = {
     "cnf",
     "vp",
     "model_evaluation",
+    "empirical_vulnerability_comparison",
 }
 
 
@@ -64,6 +67,11 @@ def as_list(value: Any) -> list[Any]:
     if isinstance(value, list):
         return value
     return [value]
+
+
+def slugify(value: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", Path(value).stem).strip("_").lower()
+    return slug or "empirical"
 
 
 class AutoRunner:
@@ -163,6 +171,7 @@ class AutoRunner:
             ("cnf", self.run_cnf),
             ("vp", self.run_vp),
             ("model_evaluation", self.run_model_evaluation),
+            ("empirical_vulnerability_comparison", self.run_empirical_vulnerability_comparison),
         ]:
             block = self.config.get(key)
             if isinstance(block, dict) and block.get("enabled", True):
@@ -180,6 +189,7 @@ class AutoRunner:
             "cnf": self.run_cnf,
             "vp": self.run_vp,
             "model_evaluation": self.run_model_evaluation,
+            "empirical_vulnerability_comparison": self.run_empirical_vulnerability_comparison,
         }
         if name not in handlers:
             raise ValueError(f"Unsupported stage: {name}")
@@ -528,6 +538,262 @@ class AutoRunner:
         if combined_output:
             outputs["combined_deforestation_output"] = combined_output
         self.record("model_evaluation", outputs)
+
+    def empirical_map_specs(self, block: dict[str, Any]) -> list[dict[str, str]]:
+        raw_maps = (
+            block.get("empirical_maps")
+            or self.config.get("empirical_vulnerability_maps")
+            or self.config.get("inputs", {}).get("empirical_vulnerability_maps")
+        )
+        specs: list[dict[str, str]] = []
+
+        if raw_maps:
+            for item in as_list(raw_maps):
+                if isinstance(item, dict):
+                    path_value = item.get("path") or item.get("file") or item.get("empirical")
+                    if not path_value:
+                        raise ValueError(
+                            "Each empirical map object must define 'path', 'file', or 'empirical'."
+                        )
+                    specs.append(
+                        {
+                            "path": str(path_value),
+                            "label": str(item.get("label") or slugify(str(path_value))),
+                            "output": str(item.get("output") or ""),
+                        }
+                    )
+                else:
+                    specs.append(
+                        {
+                            "path": str(item),
+                            "label": slugify(str(item)),
+                            "output": "",
+                        }
+                    )
+        else:
+            discovered = sorted(self.working_directory.glob("empirical_vulnerability_*.tif"))
+            legacy = self.working_directory / DEFAULT_INPUT_FILES["empirical_vulnerability"]
+            if legacy.exists() and legacy not in discovered:
+                discovered.append(legacy)
+            specs = [
+                {"path": path.name, "label": slugify(path.name), "output": ""}
+                for path in discovered
+            ]
+
+        if not specs:
+            raise ValueError(
+                "At least one empirical vulnerability map is required for "
+                "empirical_vulnerability_comparison. Provide files named "
+                "empirical_vulnerability_*.tif in working_directory or list them "
+                "under empirical_vulnerability_maps in the YAML."
+            )
+
+        labels = [spec["label"] for spec in specs]
+        if len(labels) != len(set(labels)):
+            raise ValueError("Empirical vulnerability map labels must be unique.")
+        return specs
+
+    def raster_class_summary_rows(
+        self,
+        maps: list[dict[str, str]],
+    ) -> list[dict[str, Any]]:
+        from osgeo import gdal
+        import numpy as np
+
+        rows: list[dict[str, Any]] = []
+        for item in maps:
+            raster_path = item["path"]
+            dataset = gdal.Open(raster_path)
+            if dataset is None:
+                raise FileNotFoundError(f"Could not open raster: {raster_path}")
+            band = dataset.GetRasterBand(1)
+            array = band.ReadAsArray()
+            nodata = band.GetNoDataValue()
+            valid = np.isfinite(array)
+            if nodata is not None:
+                valid &= array != nodata
+            valid &= array > 0
+            valid_values = array[valid]
+            pixel_count_total = int(valid_values.size)
+            pixel_area_ha = abs(dataset.GetGeoTransform()[1] * dataset.GetGeoTransform()[5]) / 10000
+            if pixel_count_total == 0:
+                rows.append(
+                    {
+                        "map_label": item["label"],
+                        "map_type": item["map_type"],
+                        "raster_path": raster_path,
+                        "class_value": "",
+                        "pixel_count": 0,
+                        "area_ha": 0,
+                        "share_of_valid_pixels": 0,
+                    }
+                )
+                continue
+            classes, counts = np.unique(valid_values.astype(int), return_counts=True)
+            for class_value, count in zip(classes.tolist(), counts.tolist()):
+                rows.append(
+                    {
+                        "map_label": item["label"],
+                        "map_type": item["map_type"],
+                        "raster_path": raster_path,
+                        "class_value": int(class_value),
+                        "pixel_count": int(count),
+                        "area_ha": float(count * pixel_area_ha),
+                        "share_of_valid_pixels": float(count / pixel_count_total),
+                    }
+                )
+        return rows
+
+    def write_comparison_csv(self, rows: list[dict[str, Any]], output_csv: str) -> None:
+        fieldnames = [
+            "map_label",
+            "map_type",
+            "raster_path",
+            "class_value",
+            "pixel_count",
+            "area_ha",
+            "share_of_valid_pixels",
+        ]
+        with Path(output_csv).open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+
+    def run_empirical_vulnerability_comparison(self, block: dict[str, Any]) -> None:
+        self.announce("Running empirical vulnerability comparison")
+        specs = self.empirical_map_specs(block)
+        mask = self.require_file(
+            self.configured_input(block, "mask", self.default_input("jurisdiction_mask")),
+            "empirical_vulnerability_comparison.mask",
+        )
+        forest_mask = self.require_file(
+            self.configured_input(block, "forest_mask", self.default_input("forest_mask_cal")),
+            "empirical_vulnerability_comparison.forest_mask",
+        )
+        n_classes = int(block.get("n_classes", 30))
+        benchmark = self.require_file(
+            self.configured_input(
+                block,
+                "benchmark_vulnerability",
+                f"{self.output_prefix}_vulnerability_vp{self.default_extension}",
+            ),
+            "empirical_vulnerability_comparison.benchmark_vulnerability",
+        )
+        comparison_csv = self.csv_output(
+            block.get("comparison_csv"),
+            "empirical_vulnerability_comparison",
+        )
+        run_fit = bool(block.get("run_fit", True))
+        run_cnf = bool(block.get("run_cnf", True))
+        run_vp = bool(block.get("run_vp", self.config.get("expected_deforestation") is not None))
+
+        generated_maps: list[dict[str, str]] = [
+            {
+                "label": "benchmark_distance",
+                "map_type": "benchmark",
+                "path": benchmark,
+            }
+        ]
+        empirical_outputs: list[dict[str, Any]] = []
+
+        if not self.dry_run:
+            from osgeo import gdal
+            from vulnerability_map import VulnerabilityMap
+
+            tool = VulnerabilityMap()
+            tool.set_working_directory(str(self.working_directory))
+        else:
+            tool = None
+            gdal = None
+
+        for spec in specs:
+            empirical = self.require_file(
+                spec["path"],
+                f"empirical_vulnerability_comparison.empirical_maps.{spec['label']}",
+            )
+            output = (
+                self.path(spec["output"])
+                if spec["output"]
+                else self.output(None, f"vulnerability_empirical_{spec['label']}")
+            )
+            if not self.dry_run:
+                data = tool.geometric_classification_alternative(
+                    empirical,
+                    n_classes,
+                    mask,
+                    forest_mask,
+                )
+                tool.array_to_image(empirical, output, data, gdal.GDT_Int16, -1)
+                tool.replace_ref_system(empirical, output)
+
+            generated_maps.append(
+                {
+                    "label": spec["label"],
+                    "map_type": "empirical",
+                    "path": output,
+                }
+            )
+            self.planned_outputs.add(output)
+
+            workflow_outputs: dict[str, Any] = {"vulnerability_output": output}
+            if run_fit:
+                fit_block = {
+                    "risk30_hrp": output,
+                    "relative_frequency_csv": f"{self.output_prefix}_{spec['label']}_relative_frequency_hrp.csv",
+                    "modeling_region_output": f"{self.output_prefix}_{spec['label']}_modeling_region_hrp{self.default_extension}",
+                    "density_output": f"{self.output_prefix}_{spec['label']}_density_hrp{self.default_extension}",
+                }
+                self.run_fit(fit_block)
+                workflow_outputs["fit"] = self.summary[-1]["outputs"]
+                empirical_csv = workflow_outputs["fit"]["relative_frequency_csv"]
+            else:
+                empirical_csv = block.get("relative_frequency_csv")
+
+            if run_cnf:
+                cnf_block = {
+                    "relative_frequency_csv": empirical_csv,
+                    "risk30_vp": output,
+                    "modeling_region_output": f"{self.output_prefix}_{spec['label']}_modeling_region_cnf{self.default_extension}",
+                    "density_output": f"{self.output_prefix}_{spec['label']}_density_cnf{self.default_extension}",
+                    "max_iterations": block.get("max_iterations", DEFAULT_MAX_ITERATIONS),
+                }
+                self.run_cnf(cnf_block)
+                workflow_outputs["cnf"] = self.summary[-1]["outputs"]
+
+            if run_vp:
+                vp_block = {
+                    "relative_frequency_csv": empirical_csv,
+                    "risk30_vp": output,
+                    "modeling_region_output": f"{self.output_prefix}_{spec['label']}_modeling_region_vp{self.default_extension}",
+                    "density_output": f"{self.output_prefix}_{spec['label']}_density_vp{self.default_extension}",
+                    "max_iterations": block.get("max_iterations", DEFAULT_MAX_ITERATIONS),
+                }
+                if block.get("expected_deforestation") is not None:
+                    vp_block["expected_deforestation"] = block["expected_deforestation"]
+                self.run_vp(vp_block)
+                workflow_outputs["vp"] = self.summary[-1]["outputs"]
+
+            empirical_outputs.append(
+                {
+                    "label": spec["label"],
+                    "input": empirical,
+                    "outputs": workflow_outputs,
+                }
+            )
+
+        if not self.dry_run:
+            rows = self.raster_class_summary_rows(generated_maps)
+            self.write_comparison_csv(rows, comparison_csv)
+
+        self.record(
+            "empirical_vulnerability_comparison",
+            {
+                "benchmark_vulnerability": benchmark,
+                "empirical_map_count": len(specs),
+                "comparison_csv": comparison_csv,
+                "empirical_outputs": empirical_outputs,
+            },
+        )
 
 
 def main() -> None:
