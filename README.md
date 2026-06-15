@@ -160,6 +160,58 @@ This fork adds a configuration-driven runner for users who want to enter all
 inputs once and let the system generate the selected outputs automatically.
 The original GUI is unchanged.
 
+### Exact Input Files
+
+Create one project folder and put the input layers in that folder with these
+exact filenames. By default, the automation runner discovers these files
+automatically and adapts the workflow to them.
+
+Required for the default full workflow:
+
+| Exact filename | Used for | Required values |
+| --- | --- | --- |
+| `admin_divisions.tif` | Administrative divisions / municipalities nested within the jurisdiction | Integer IDs. Values must remain stable across HRP, CNF, and VP workflows. |
+| `jurisdiction_mask.tif` | Non-excluded jurisdiction mask | Binary raster: `1` inside the jurisdiction, `0` outside/excluded. |
+| `distance_to_non_forest_cal.tif` | Distance-to-non-forest map for NRT calculation | Continuous or integer distance raster in map units. |
+| `distance_to_non_forest_hrp.tif` | Distance-to-non-forest map used to create the HRP vulnerability map | Same projection, resolution, rows, and columns as all other rasters. |
+| `distance_to_non_forest_vp.tif` | Distance-to-non-forest map used to create the CNF/VP vulnerability map | Same projection, resolution, rows, and columns as all other rasters. |
+| `deforestation_hrp.tif` | HRP deforestation map used for fitting and NRT | Binary raster: `1` deforestation, `0` no deforestation. |
+| `deforestation_cnf.tif` | CNF deforestation map used for confirmation prediction and evaluation | Binary raster: `1` deforestation, `0` no deforestation. |
+
+Optional inputs:
+
+| Exact filename | Used for | Required values |
+| --- | --- | --- |
+| `forest_mask_cal.tif` | Forest mask at the start of CAL | Binary raster: `1` forest, `0` non-forest. Required for combined deforestation reference maps and alternative vulnerability workflows. |
+| `deforestation_cal.tif` | CAL deforestation map | Binary raster: `1` deforestation, `0` no deforestation. Required for combined deforestation reference maps. |
+| `empirical_vulnerability_0_1.tif` | Alternative empirical vulnerability workflow | Continuous raster scaled from `0.0` to `1.0`. |
+
+The VP workflow also requires one numeric value in the YAML file:
+
+```yaml
+expected_deforestation: 10000
+```
+
+This is the expected annual jurisdictional deforestation rate in hectares per
+year for the Validity Period.
+
+If your source data use different filenames, either rename them to the exact
+names above or override them in the YAML:
+
+```yaml
+inputs:
+  admin_divisions: my_municipalities.tif
+  jurisdiction_mask: my_jurisdiction_mask.tif
+```
+
+With the default filenames, the minimum YAML is:
+
+```yaml
+working_directory: C:/path/to/your/udef_project
+output_prefix: acre
+expected_deforestation: 10000
+```
+
 Copy the example configuration:
 
 ```powershell
@@ -167,9 +219,18 @@ copy examples\auto_config.yml my_project.yml
 notepad my_project.yml
 ```
 
-Fill in `working_directory`, raster inputs, expected deforestation, output
-names, and the stages you want to run. Paths can be absolute or relative to
-`working_directory`.
+Fill in `working_directory`, `output_prefix`, and `expected_deforestation`.
+Only list raster inputs if you need to override the default filenames. Paths can
+be absolute or relative to `working_directory`.
+
+If `stages` is omitted, the default automatic workflow runs:
+
+1. `nrt`
+2. `vulnerability_distance` for HRP
+3. `fit`
+4. `vulnerability_distance` for VP
+5. `cnf`
+6. `vp`
 
 Run a validation pass first:
 

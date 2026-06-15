@@ -29,3 +29,16 @@ jobs:
       - name: Check automation help
         run: |
           python udef_auto.py --help
+
+      - name: Check automatic input discovery
+        run: |
+          mkdir -p temp_project
+          touch temp_project/admin_divisions.tif
+          touch temp_project/jurisdiction_mask.tif
+          touch temp_project/distance_to_non_forest_cal.tif
+          touch temp_project/distance_to_non_forest_hrp.tif
+          touch temp_project/distance_to_non_forest_vp.tif
+          touch temp_project/deforestation_hrp.tif
+          touch temp_project/deforestation_cnf.tif
+          printf "working_directory: temp_project\noutput_prefix: test\nexpected_deforestation: 10000\n" > temp_auto.yml
+          python udef_auto.py temp_auto.yml --dry-run
