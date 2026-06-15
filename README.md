@@ -4,6 +4,13 @@
 [![CI](https://github.com/abrandaojr/udefa/actions/workflows/ci.yml/badge.svg)](https://github.com/abrandaojr/udefa/actions/workflows/ci.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-green.svg)](LICENSE)
 
+This repository is a maintained fork of
+[ClarkCGA/UDef-ARP](https://github.com/ClarkCGA/UDef-ARP), the original
+UDef-ARP repository developed by Clark Labs in collaboration with TerraCarbon.
+This fork preserves the original GPLv3 license, credits, documentation assets,
+and application structure, while adding repository polish, CI checks, and a
+documented fix for modeling region ID overflow.
+
 Unplanned Deforestation Allocated Risk Modeling and Mapping Procedure
 (UDef-ARP) is a Windows desktop application for implementing the modeling and
 mapping workflow associated with Verra's VT0007 Unplanned Deforestation
@@ -47,6 +54,32 @@ procedure.
 Only limited input bulletproofing has been implemented. Users should read the
 VT0007 documentation carefully and verify all input rasters before running the
 workflow.
+
+## Source And Attribution
+
+- Original source repository:
+  [ClarkCGA/UDef-ARP](https://github.com/ClarkCGA/UDef-ARP)
+- Original developers: Clark Labs, Clark University
+- Collaborating organization: TerraCarbon
+- Upstream project: Unplanned Deforestation Allocated Risk Modeling and Mapping Procedure (UDef-ARP)
+- Upstream reference checked for this fork: `ClarkCGA/UDef-ARP` tag `v2.14.1`, commit `14acdaf`
+- Protocol reference:
+  [Verra VT0007 Unplanned Deforestation Allocation v1.0](https://verra.org/wp-content/uploads/2024/02/VT0007-Unplanned-Deforestation-Allocation-v1.0.pdf)
+- License: GNU General Public License v3
+
+All core application code, GUI assets, fonts, documentation PDFs, logos, and
+sample workflow materials originate from the upstream UDef-ARP project unless
+otherwise stated. Changes made in this fork are intended to preserve provenance
+and improve maintainability, documentation, and reproducibility.
+
+To compare this fork with the upstream source:
+
+```powershell
+git remote add upstream https://github.com/ClarkCGA/UDef-ARP.git
+git fetch upstream --tags
+git log --oneline upstream/main..main
+git diff upstream/main...main
+```
 
 ## Important Fix In This Fork
 
@@ -165,3 +198,5 @@ representative raster inputs.
 
 This project is distributed under the GNU General Public License v3. See
 [`LICENSE`](LICENSE).
+
+See [`NOTICE.md`](NOTICE.md) for upstream attribution and fork-specific notes.
