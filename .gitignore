@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Conda and virtual environments
+.venv/
+venv/
+env/
+
+# Editor and OS files
+.vscode/
+.idea/
+*.DS_Store
+Thumbs.db
+
+# Logs and temporary files
+*.log
+*.tmp

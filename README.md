@@ -1,89 +1,167 @@
+# UDef-ARP
 
-# Unplanned Deforestation Allocated Risk Modeling and Mapping Procedure (UDef-ARP)
+[![Python](https://img.shields.io/badge/python-3.9--3.10-blue.svg)](https://www.python.org/)
+[![CI](https://github.com/abrandaojr/udefa/actions/workflows/ci.yml/badge.svg)](https://github.com/abrandaojr/udefa/actions/workflows/ci.yml)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-green.svg)](LICENSE)
 
-UDef-ARP was developed by Clark Labs, in collaboration with TerraCarbon, to facilitate implementation of the Verra tool, [VT0007 Unplanned Deforestation Allocation (UDef-A)](https://verra.org/wp-content/uploads/2024/02/VT0007-Unplanned-Deforestation-Allocation-v1.0.pdf). It is used in conjunction with a raster-capable GIS for input data preparation and output display. Tools are provided for the development of models using the Calibration Period (CAL) and subsequent testing during the Confirmation Period (CNF). Based on these evaluations, the selected procedure uses the full Historical Reference Period (HRP) to build a model and prediction for the Validity Period (VP). The final output is a map expressed in hectares/pixel/year of expected forest loss.
+Unplanned Deforestation Allocated Risk Modeling and Mapping Procedure
+(UDef-ARP) is a Windows desktop application for implementing the modeling and
+mapping workflow associated with Verra's VT0007 Unplanned Deforestation
+Allocation tool:
+[VT0007 Unplanned Deforestation Allocation v1.0](https://verra.org/wp-content/uploads/2024/02/VT0007-Unplanned-Deforestation-Allocation-v1.0.pdf).
+
+UDef-ARP was developed by Clark Labs in collaboration with TerraCarbon. It is
+used together with a raster-capable GIS for preparing inputs and reviewing
+outputs. The final output is an expected forest-loss risk map expressed in
+hectares per pixel per year.
+
 <p align="center">
-  <img src="data/stage.PNG" alt="Fitting and Prediction Phases and Chronology of the Testing and Application Stages, sourced from the VT0007 report">
-Fitting and Prediction Phases and Chronology of the Testing and Application Stages (VT0007)
+  <img src="data/stage.PNG" alt="Fitting and prediction phases for the VT0007 workflow">
+  <br>
+  <em>Fitting and prediction phases, testing stages, and application stages from the VT0007 workflow.</em>
 </p>
-UDef-ARP provides the basis for developing a benchmark model as well as tools for comparative testing against alternative empirical models. The benchmark is intentionally simple – it requires only two inputs, distance from the forest edge (non-forest) and a map of administrative divisions that are fully nested within the jurisdiction. Based on these, it uses a relative frequency approach to determine the density of expected deforestation. In testing, this was found to provide a strong benchmark. However, it is intended that users incorporate more sophisticated empirical models, which may be used in UDef-A if they can be shown to be superior to the benchmark for both the fitted model in the Calibration Period and the prediction model in the Confirmation Period. Note that the manner in which alternative models are incorporated and tested is very specifically defined by the UDef-A protocol. UDef-ARP facilitates this testing process.
 
-#### Some important points:
-1. At present, UDef-ARP only supports Windows platforms.
-2. A Windows installer is available as an alternative to working with the Python code.
-3. At present, only limited bulletproofing has been done. Please read the UDef-A document carefully regarding required inputs.
-4. UDef-ARP is still under development. Frequent updates are expected.
+## What The Application Does
 
-## Changelog (this fork)
+- Builds 30-class vulnerability maps from forest-edge distance or alternative model outputs
+- Allocates unplanned deforestation risk across administrative divisions nested within a jurisdiction
+- Supports Calibration Period (CAL), Confirmation Period (CNF), Historical Reference Period (HRP), and Validity Period (VP) workflows
+- Produces maps in GeoTIFF or TerrSet raster formats
+- Provides tools for comparing the benchmark procedure against alternative empirical models
+- Includes PDF documentation for each major workflow stage
 
-### Fix — modeling region ID overflow (`allocation_tool.py`)
+The benchmark model is intentionally simple. It uses distance from the forest
+edge and a map of administrative divisions to estimate expected deforestation
+density with a relative-frequency approach. Alternative empirical models can be
+tested and used when they outperform the benchmark according to the VT0007
+procedure.
 
-Modeling region IDs are computed as `vulnerability_class * 1000 + admin_division_id`.
-The original code cast these arrays to `numpy.int16` (max value 32 767).
-For jurisdictions where `admin_division_id > ~767` at vulnerability class 30
-(e.g., any state with hundreds of municipalities), the cast silently wraps around,
-producing wrong IDs throughout the relative-frequency table and all downstream outputs.
+## Project Status
 
-**Fix:** both `tabulation_bin_id_HRP` and `tabulation_bin_id_VP` now cast to
-`numpy.int32` and write `GDT_Int32` rasters. `int32` supports up to ~32 million
-administrative divisions without overflow.
+- Platform: Windows only
+- Interface: PyQt5 desktop GUI
+- Raster engine: GDAL
+- Primary environment: Conda
+- Development status: active, with updates expected
+
+Only limited input bulletproofing has been implemented. Users should read the
+VT0007 documentation carefully and verify all input rasters before running the
+workflow.
+
+## Important Fix In This Fork
+
+### Modeling Region ID Overflow
+
+Modeling region IDs are computed as:
+
+```text
+vulnerability_class * 1000 + admin_division_id
+```
+
+The original implementation cast these arrays to `numpy.int16`, which can
+silently overflow above `32,767`. For jurisdictions with many administrative
+divisions, this can corrupt the relative-frequency table and downstream outputs.
+
+This fork casts `tabulation_bin_id_HRP` and `tabulation_bin_id_VP` to
+`numpy.int32` and writes `GDT_Int32` rasters. That preserves valid modeling
+region IDs for much larger jurisdictions.
+
+## Repository Layout
+
+```text
+UDef-ARP.py                 Main PyQt5 desktop application
+allocation_tool.py          Allocation and relative-frequency routines
+vulnerability_map.py        Vulnerability map generation routines
+model_evaluation.py         Model comparison and evaluation routines
+UDef-ARP_conda_env.yml      Conda environment definition
+data/                       UI files, images, icons, and logos
+doc/                        Workflow documentation PDFs
+font/                       Application font assets
+```
 
 ## Requirements
-### Operating System
-The UDef-ARP is currently operational exclusively on Windows systems.
 
-### Dependencies
-- [Python](https://www.python.org/) 3.9+
-- [GDAL](https://github.com/OSGeo/gdal) 3.7.2+
-- [PyQt5](https://pypi.org/project/PyQt5/)
-- [NumPy](https://github.com/numpy/numpy)
-- [pandas](https://github.com/pandas-dev/pandas)
-- [GeoPandas](https://github.com/geopandas/geopandas)
-- [SciPy](https://github.com/scipy/scipy)
-- [Shapely](https://github.com/shapely/shapely)
-- [Matplotlib](https://github.com/matplotlib/matplotlib)
+- Windows
+- Anaconda or Miniconda
+- Python 3.9 to 3.10
+- GDAL
+- PyQt5
+- NumPy
+- pandas
+- GeoPandas
+- SciPy
+- Shapely
+- Matplotlib
+- Raster inputs in an equal-area projection
 
-### Hardward Requirements
-UDef-ARP was created with open source tools. In the current version, all raster inputs are stored in RAM during processing. Therefore, large jurisdictions will require substantial RAM allocations (e.g., 64Gb). The interface was developed in Qt 5. A minimum screen resolution of 1920 x 1080 (HD) is required. A 4K resolution is recommended.
+Large jurisdictions can require substantial RAM because raster inputs are held
+in memory during processing. A minimum display resolution of 1920 x 1080 is
+recommended; 4K is preferred.
 
-## Conda Environment Setup
+## Installation
 
-### Step 1: Download Anaconda
-Download and install the latest version of Anaconda from https://www.anaconda.com/download
+Open Anaconda Prompt on Windows:
 
-### Step 2: Create a Virtual Environment
-Open the Anaconda Prompt. Use the YAML file with the following command to create your virtual environment:
-
-```
+```powershell
+git clone https://github.com/abrandaojr/udefa.git
+cd udefa
 conda env create -f UDef-ARP_conda_env.yml
-```
-Activate the environment you just created:
-```
 conda activate udefarp
 ```
-## Before You Start
-### Step 1: Clone or Download the UDef-ARP Folder
-Clone the repository or download the folder to your local directory.
 
-### Step 2: Open the GUI
-#### 1. Use your Python IDE to Open
-Open the UDef-ARP.py file using any Python IDE.
+Run the application:
 
-#### 2. Use Anaconda Prompt to Open
-After activating your environment, change the directory to the folder directory:
+```powershell
+python UDef-ARP.py
 ```
-cd your_folder_directory
-```
-Then, open the UDef-ARP.py file:
-```
-Python UDef-ARP.py
-```
-### Step 3: Prepare Your Data
-UDef-ARP accepts raster map data is either a Geotiff “.tif” or TerrSet “.rst” (binary flat raster ) format. Similarly, outputs can be in either format. **All map data are required to be on an Equal Area Projection**. All map inputs must be co-registered and have the same resolution and the same number of rows and columns.
+
+The GUI can also be launched from a Python IDE after activating the `udefarp`
+environment.
+
+## Input Data Rules
+
+UDef-ARP accepts raster inputs in:
+
+- GeoTIFF `.tif`
+- TerrSet `.rst`
+
+All map inputs must:
+
+- Use an equal-area projection
+- Be co-registered
+- Use the same spatial resolution
+- Have the same number of rows and columns
+- Follow the required binary or class-value conventions described in the VT0007 workflow documentation
 
 <p align="center">
-  <img src="data/intro_screen.png" alt="GUI Image">
+  <img src="data/intro_screen.png" alt="UDef-ARP graphical user interface">
 </p>
 
-## COPYRIGHT AND LICENSE
-©2023-2024 Clark Labs. This software is free to use and distribute under the terms of the GNU-GLP license.
+## Documentation
+
+Detailed PDF guides are included in `doc/`:
+
+- `UDef-ARP_Introduction.pdf`
+- Calibration fitting guides
+- Confirmation prediction guides
+- Historical reference period fitting guides
+- Validity period application guides
+
+The GUI also links to the relevant documentation from each workflow screen.
+
+## Quality Checks
+
+The repository includes a lightweight GitHub Actions workflow that checks Python
+syntax without launching the GUI:
+
+```powershell
+python -m compileall -q UDef-ARP.py allocation_tool.py vulnerability_map.py model_evaluation.py
+```
+
+Runtime validation still requires the full Windows Conda environment and
+representative raster inputs.
+
+## License
+
+This project is distributed under the GNU General Public License v3. See
+[`LICENSE`](LICENSE).
