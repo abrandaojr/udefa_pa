@@ -40,13 +40,15 @@ historical_period_years: 10
 #   deforestation_cnf: deforestation_cnf.tif
 
 # Optional: compare one or more empirical vulnerability maps.
-# Put at least one file matching empirical_vulnerability_*.tif in
-# working_directory, or list maps explicitly here.
+# Put at least one file matching empirical_vulnerability_<model>.tif in
+# working_directory. The <model> part must name the mathematical model.
 # empirical_vulnerability_maps:
-#   - path: empirical_vulnerability_model_a.tif
-#     label: model_a
-#   - path: empirical_vulnerability_model_b.tif
-#     label: model_b
+#   - path: empirical_vulnerability_mlp.tif
+#     model: mlp
+#   - path: empirical_vulnerability_rf.tif
+#     model: rf
+#   - path: empirical_vulnerability_logit.tif
+#     model: logit
 
 # Optional: uncomment to run a custom subset/order.
 # stages:

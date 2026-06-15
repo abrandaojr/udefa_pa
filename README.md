@@ -188,7 +188,7 @@ Optional inputs:
 | --- | --- | --- |
 | `forest_mask_cal.tif` | Forest mask at the start of CAL | Binary raster: `1` forest, `0` non-forest. Required for combined deforestation reference maps and alternative vulnerability workflows. |
 | `deforestation_cal.tif` | CAL deforestation map | Binary raster: `1` deforestation, `0` no deforestation. Required for combined deforestation reference maps. |
-| `empirical_vulnerability_*.tif` | Alternative empirical vulnerability comparison | One or more continuous rasters scaled from `0.0` to `1.0`. At least one empirical map is required when running empirical comparison. |
+| `empirical_vulnerability_<model>.tif` | Alternative empirical vulnerability comparison | One or more continuous rasters scaled from `0.0` to `1.0`. The `<model>` part must identify the mathematical model used to generate the map, such as `mlp`, `rf`, or `logit`. At least one empirical map is required when running empirical comparison. |
 
 The VP workflow also requires the length of the Historical Reference Period in
 years:
@@ -300,16 +300,26 @@ Users can provide more than one empirical vulnerability map for comparison. Put
 the maps in `working_directory` using this filename pattern:
 
 ```text
-empirical_vulnerability_*.tif
+empirical_vulnerability_<model>.tif
 ```
 
 Examples:
 
 ```text
-empirical_vulnerability_model_a.tif
-empirical_vulnerability_model_b.tif
-empirical_vulnerability_random_forest.tif
+empirical_vulnerability_mlp.tif
+empirical_vulnerability_rf.tif
+empirical_vulnerability_logit.tif
 ```
+
+The filename is used to identify the mathematical model in outputs and
+comparison tables. For example:
+
+- `empirical_vulnerability_mlp.tif` becomes model `mlp`
+- `empirical_vulnerability_rf.tif` becomes model `rf`
+- `empirical_vulnerability_logit.tif` becomes model `logit`
+
+Do not use generic names such as `empirical_vulnerability_0_1.tif` or
+`empirical_vulnerability_model.tif`, because they do not identify the model.
 
 When `empirical_vulnerability_comparison` is enabled, at least one empirical
 map is required. The runner compares `n + 1` maps:
@@ -343,10 +353,12 @@ To list maps explicitly instead of using the filename pattern:
 
 ```yaml
 empirical_vulnerability_maps:
-  - path: empirical_vulnerability_model_a.tif
-    label: model_a
-  - path: empirical_vulnerability_model_b.tif
-    label: model_b
+  - path: empirical_vulnerability_mlp.tif
+    model: mlp
+  - path: empirical_vulnerability_rf.tif
+    model: rf
+  - path: empirical_vulnerability_logit.tif
+    model: logit
 ```
 
 ## Input Data Rules

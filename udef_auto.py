@@ -37,7 +37,7 @@ DEFAULT_INPUT_FILES = {
     "deforestation_cal": "deforestation_cal.tif",
     "deforestation_hrp": "deforestation_hrp.tif",
     "deforestation_cnf": "deforestation_cnf.tif",
-    "empirical_vulnerability": "empirical_vulnerability_0_1.tif",
+    "empirical_vulnerability": "empirical_vulnerability_<model>.tif",
 }
 
 LEGACY_BLOCK_NAMES = {
@@ -78,6 +78,25 @@ def as_list(value: Any) -> list[Any]:
 def slugify(value: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9]+", "_", Path(value).stem).strip("_").lower()
     return slug or "empirical"
+
+
+def model_name_from_empirical_filename(value: str) -> str:
+    stem = Path(value).stem.lower()
+    prefix = "empirical_vulnerability_"
+    if not stem.startswith(prefix):
+        raise ValueError(
+            "Empirical vulnerability maps must be named "
+            "empirical_vulnerability_<model>.tif, for example "
+            "empirical_vulnerability_mlp.tif, empirical_vulnerability_rf.tif, "
+            "or empirical_vulnerability_logit.tif."
+        )
+    model_name = slugify(stem[len(prefix):])
+    if not model_name or model_name in {"0_1", "map", "model"}:
+        raise ValueError(
+            "The empirical vulnerability filename must identify the mathematical "
+            "model after empirical_vulnerability_, for example mlp, rf, or logit."
+        )
+    return model_name
 
 
 class AutoRunner:
@@ -655,25 +674,38 @@ class AutoRunner:
                     specs.append(
                         {
                             "path": str(path_value),
-                            "label": str(item.get("label") or slugify(str(path_value))),
+                            "label": str(
+                                item.get("label")
+                                or item.get("model")
+                                or model_name_from_empirical_filename(str(path_value))
+                            ),
+                            "model_name": str(
+                                item.get("model")
+                                or item.get("label")
+                                or model_name_from_empirical_filename(str(path_value))
+                            ),
                             "output": str(item.get("output") or ""),
                         }
                     )
                 else:
+                    model_name = model_name_from_empirical_filename(str(item))
                     specs.append(
                         {
                             "path": str(item),
-                            "label": slugify(str(item)),
+                            "label": model_name,
+                            "model_name": model_name,
                             "output": "",
                         }
                     )
         else:
             discovered = sorted(self.working_directory.glob("empirical_vulnerability_*.tif"))
-            legacy = self.working_directory / DEFAULT_INPUT_FILES["empirical_vulnerability"]
-            if legacy.exists() and legacy not in discovered:
-                discovered.append(legacy)
             specs = [
-                {"path": path.name, "label": slugify(path.name), "output": ""}
+                {
+                    "path": path.name,
+                    "label": model_name_from_empirical_filename(path.name),
+                    "model_name": model_name_from_empirical_filename(path.name),
+                    "output": "",
+                }
                 for path in discovered
             ]
 
@@ -681,13 +713,15 @@ class AutoRunner:
             raise ValueError(
                 "At least one empirical vulnerability map is required for "
                 "empirical_vulnerability_comparison. Provide files named "
-                "empirical_vulnerability_*.tif in working_directory or list them "
-                "under empirical_vulnerability_maps in the YAML."
+                "empirical_vulnerability_<model>.tif in working_directory "
+                "(for example empirical_vulnerability_mlp.tif, "
+                "empirical_vulnerability_rf.tif, or empirical_vulnerability_logit.tif) "
+                "or list them under empirical_vulnerability_maps in the YAML."
             )
 
         labels = [spec["label"] for spec in specs]
         if len(labels) != len(set(labels)):
-            raise ValueError("Empirical vulnerability map labels must be unique.")
+            raise ValueError("Empirical vulnerability map labels/model names must be unique.")
         return specs
 
     def raster_class_summary_rows(
@@ -717,6 +751,7 @@ class AutoRunner:
                 rows.append(
                     {
                         "map_label": item["label"],
+                        "model_name": item.get("model_name", item["label"]),
                         "map_type": item["map_type"],
                         "raster_path": raster_path,
                         "class_value": "",
@@ -731,6 +766,7 @@ class AutoRunner:
                 rows.append(
                     {
                         "map_label": item["label"],
+                        "model_name": item.get("model_name", item["label"]),
                         "map_type": item["map_type"],
                         "raster_path": raster_path,
                         "class_value": int(class_value),
@@ -744,6 +780,7 @@ class AutoRunner:
     def write_comparison_csv(self, rows: list[dict[str, Any]], output_csv: str) -> None:
         fieldnames = [
             "map_label",
+            "model_name",
             "map_type",
             "raster_path",
             "class_value",
@@ -802,6 +839,7 @@ class AutoRunner:
         generated_maps: list[dict[str, str]] = [
             {
                 "label": "benchmark_distance",
+                "model_name": "distance_benchmark",
                 "map_type": "benchmark",
                 "path": benchmark,
             }
@@ -841,6 +879,7 @@ class AutoRunner:
             generated_maps.append(
                 {
                     "label": spec["label"],
+                    "model_name": spec["model_name"],
                     "map_type": "empirical",
                     "path": output,
                 }
@@ -899,6 +938,7 @@ class AutoRunner:
             empirical_outputs.append(
                 {
                     "label": spec["label"],
+                    "model_name": spec["model_name"],
                     "input": empirical,
                     "outputs": workflow_outputs,
                 }
