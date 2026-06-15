@@ -190,14 +190,41 @@ Optional inputs:
 | `deforestation_cal.tif` | CAL deforestation map | Binary raster: `1` deforestation, `0` no deforestation. Required for combined deforestation reference maps. |
 | `empirical_vulnerability_*.tif` | Alternative empirical vulnerability comparison | One or more continuous rasters scaled from `0.0` to `1.0`. At least one empirical map is required when running empirical comparison. |
 
-The VP workflow also requires one numeric value in the YAML file:
+The VP workflow also requires the length of the Historical Reference Period in
+years:
 
 ```yaml
-expected_deforestation: 10000
+historical_period_years: 10
 ```
 
-This is the expected annual jurisdictional deforestation rate in hectares per
-year for the Validity Period.
+The runner uses `deforestation_hrp.tif` to calculate the average annual
+historical deforestation rate:
+
+```text
+BAU = total HRP deforestation area (ha) / historical_period_years
+```
+
+It then generates four VP scenarios automatically:
+
+| Scenario | Formula |
+| --- | --- |
+| `bau` | historical annual rate |
+| `low` | BAU - 10% |
+| `medium` | BAU + 10% |
+| `high` | BAU + 20% |
+
+The scenario values are written to
+`<output_prefix>_expected_deforestation_scenarios.csv`.
+
+You can still override the values manually with:
+
+```yaml
+expected_deforestation_scenarios:
+  bau: 10000
+  low: 9000
+  medium: 11000
+  high: 12000
+```
 
 If your source data use different filenames, either rename them to the exact
 names above or override them in the YAML:
@@ -213,7 +240,7 @@ With the default filenames, the minimum YAML is:
 ```yaml
 working_directory: C:/path/to/your/udef_project
 output_prefix: acre
-expected_deforestation: 10000
+historical_period_years: 10
 ```
 
 Copy the example configuration:
@@ -223,7 +250,7 @@ copy examples\auto_config.yml my_project.yml
 notepad my_project.yml
 ```
 
-Fill in `working_directory`, `output_prefix`, and `expected_deforestation`.
+Fill in `working_directory`, `output_prefix`, and `historical_period_years`.
 Only list raster inputs if you need to override the default filenames. Paths can
 be absolute or relative to `working_directory`.
 
@@ -295,7 +322,7 @@ For each empirical map, the runner can automatically:
 - generate a 30-class alternative vulnerability map
 - run fitting against HRP deforestation
 - run CNF prediction
-- run VP prediction when `expected_deforestation` is provided
+- run VP prediction for BAU, low, medium, and high scenarios
 - write a class-distribution comparison CSV for the benchmark plus all empirical maps
 
 Example:
@@ -303,7 +330,7 @@ Example:
 ```yaml
 working_directory: C:/path/to/your/udef_project
 output_prefix: acre
-expected_deforestation: 10000
+historical_period_years: 10
 
 stages:
   - name: nrt

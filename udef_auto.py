@@ -20,6 +20,12 @@ import yaml
 
 
 DEFAULT_MAX_ITERATIONS = 25
+SCENARIO_MULTIPLIERS = {
+    "bau": 1.0,
+    "low": 0.9,
+    "medium": 1.1,
+    "high": 1.2,
+}
 
 DEFAULT_INPUT_FILES = {
     "admin_divisions": "admin_divisions.tif",
@@ -87,6 +93,7 @@ class AutoRunner:
         self.planned_outputs: set[str] = set()
         self.last_nrt: int | None = None
         self.last_relative_frequency_csv: str | None = None
+        self.expected_deforestation_scenarios: dict[str, float] | None = None
 
     def path(self, value: str | Path) -> str:
         candidate = Path(value).expanduser()
@@ -124,6 +131,82 @@ class AutoRunner:
                 f"Default input filenames:\n{defaults}"
             )
         return path
+
+    def historical_period_years(self, block: dict[str, Any] | None = None) -> float:
+        block = block or {}
+        value = (
+            block.get("historical_period_years")
+            or self.config.get("historical_period_years")
+            or self.config.get("hrp_years")
+        )
+        if value in (None, ""):
+            raise ValueError(
+                "Missing required value: historical_period_years. "
+                "This is needed to calculate BAU expected deforestation from "
+                "the historical-period deforestation map."
+            )
+        years = float(value)
+        if years <= 0:
+            raise ValueError("historical_period_years must be greater than zero.")
+        return years
+
+    def calculate_binary_deforestation_area_ha(self, raster_path: str) -> float:
+        from osgeo import gdal
+        import numpy as np
+
+        dataset = gdal.Open(raster_path)
+        if dataset is None:
+            raise FileNotFoundError(f"Could not open raster: {raster_path}")
+        band = dataset.GetRasterBand(1)
+        array = band.ReadAsArray()
+        nodata = band.GetNoDataValue()
+        valid = np.isfinite(array)
+        if nodata is not None:
+            valid &= array != nodata
+        deforested_pixels = (array == 1) & valid
+        pixel_area_ha = abs(dataset.GetGeoTransform()[1] * dataset.GetGeoTransform()[5]) / 10000
+        return float(deforested_pixels.sum() * pixel_area_ha)
+
+    def get_expected_deforestation_scenarios(
+        self,
+        block: dict[str, Any] | None = None,
+    ) -> dict[str, float]:
+        block = block or {}
+        if self.expected_deforestation_scenarios is not None:
+            return self.expected_deforestation_scenarios
+
+        explicit_scenarios = block.get("expected_deforestation_scenarios") or self.config.get(
+            "expected_deforestation_scenarios"
+        )
+        if explicit_scenarios:
+            scenarios = {str(key): float(value) for key, value in explicit_scenarios.items()}
+            self.expected_deforestation_scenarios = scenarios
+            return scenarios
+
+        explicit = block.get("expected_deforestation") or self.config.get("expected_deforestation")
+        if explicit not in (None, ""):
+            bau = float(explicit)
+        else:
+            years = self.historical_period_years(block)
+            if self.dry_run:
+                bau = float(block.get("dry_run_historical_deforestation_ha", 100000)) / years
+            else:
+                deforestation_hrp = self.require_file(
+                    self.configured_input(
+                        block,
+                        "deforestation_hrp",
+                        self.default_input("deforestation_hrp"),
+                    ),
+                    "expected_deforestation.deforestation_hrp",
+                )
+                bau = self.calculate_binary_deforestation_area_ha(deforestation_hrp) / years
+
+        scenarios = {
+            name: float(bau * multiplier)
+            for name, multiplier in SCENARIO_MULTIPLIERS.items()
+        }
+        self.expected_deforestation_scenarios = scenarios
+        return scenarios
 
     def record(self, stage: str, outputs: dict[str, Any]) -> None:
         self.summary.append({"stage": stage, "outputs": outputs})
@@ -442,34 +525,48 @@ class AutoRunner:
             ),
             "vp.risk30_vp",
         )
-        expected_deforestation = float(
-            block.get("expected_deforestation")
-            or self.config.get("expected_deforestation")
-            or require(block, "expected_deforestation")
+        scenarios = self.get_expected_deforestation_scenarios(block)
+        scenario_csv = self.csv_output(
+            block.get("scenario_csv"),
+            "expected_deforestation_scenarios",
         )
-        modeling_region = self.output(block.get("modeling_region_output"), "modeling_region_vp")
-        density = self.output(block.get("density_output"), "density_vp")
+        if not self.dry_run:
+            self.write_scenario_csv(scenarios, scenario_csv)
         max_iterations = int(block.get("max_iterations", DEFAULT_MAX_ITERATIONS))
 
-        result: dict[str, Any] = {
-            "modeling_region_output": modeling_region,
-            "density_output": density,
-        }
-        if not self.dry_run:
-            from allocation_tool import AllocationTool
-
-            missing_ids, iterations = AllocationTool().execute_workflow_vp(
-                str(self.working_directory),
-                max_iterations,
-                relative_frequency_csv,
-                municipality,
-                expected_deforestation,
-                risk30_vp,
-                modeling_region,
-                density,
+        result: dict[str, Any] = {"scenario_csv": scenario_csv, "scenarios": {}}
+        for scenario_name, expected_deforestation in scenarios.items():
+            modeling_region = self.output(
+                block.get(f"{scenario_name}_modeling_region_output"),
+                f"modeling_region_vp_{scenario_name}",
             )
-            result["missing_modeling_region_ids"] = [int(x) for x in missing_ids.tolist()]
-            result["iterations"] = int(iterations)
+            density = self.output(
+                block.get(f"{scenario_name}_density_output"),
+                f"density_vp_{scenario_name}",
+            )
+            scenario_result: dict[str, Any] = {
+                "expected_deforestation_ha_per_year": expected_deforestation,
+                "modeling_region_output": modeling_region,
+                "density_output": density,
+            }
+            if not self.dry_run:
+                from allocation_tool import AllocationTool
+
+                missing_ids, iterations = AllocationTool().execute_workflow_vp(
+                    str(self.working_directory),
+                    max_iterations,
+                    relative_frequency_csv,
+                    municipality,
+                    expected_deforestation,
+                    risk30_vp,
+                    modeling_region,
+                    density,
+                )
+                scenario_result["missing_modeling_region_ids"] = [
+                    int(x) for x in missing_ids.tolist()
+                ]
+                scenario_result["iterations"] = int(iterations)
+            result["scenarios"][scenario_name] = scenario_result
         self.record("vp", result)
 
     def run_model_evaluation(self, block: dict[str, Any]) -> None:
@@ -659,6 +756,21 @@ class AutoRunner:
             writer.writeheader()
             writer.writerows(rows)
 
+    def write_scenario_csv(self, scenarios: dict[str, float], output_csv: str) -> None:
+        with Path(output_csv).open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=["scenario", "expected_deforestation_ha_per_year"],
+            )
+            writer.writeheader()
+            for scenario, value in scenarios.items():
+                writer.writerow(
+                    {
+                        "scenario": scenario,
+                        "expected_deforestation_ha_per_year": value,
+                    }
+                )
+
     def run_empirical_vulnerability_comparison(self, block: dict[str, Any]) -> None:
         self.announce("Running empirical vulnerability comparison")
         specs = self.empirical_map_specs(block)
@@ -764,12 +876,23 @@ class AutoRunner:
                 vp_block = {
                     "relative_frequency_csv": empirical_csv,
                     "risk30_vp": output,
-                    "modeling_region_output": f"{self.output_prefix}_{spec['label']}_modeling_region_vp{self.default_extension}",
-                    "density_output": f"{self.output_prefix}_{spec['label']}_density_vp{self.default_extension}",
                     "max_iterations": block.get("max_iterations", DEFAULT_MAX_ITERATIONS),
                 }
-                if block.get("expected_deforestation") is not None:
-                    vp_block["expected_deforestation"] = block["expected_deforestation"]
+                for scenario_name in SCENARIO_MULTIPLIERS:
+                    vp_block[
+                        f"{scenario_name}_modeling_region_output"
+                    ] = (
+                        f"{self.output_prefix}_{spec['label']}_modeling_region_vp_"
+                        f"{scenario_name}{self.default_extension}"
+                    )
+                    vp_block[f"{scenario_name}_density_output"] = (
+                        f"{self.output_prefix}_{spec['label']}_density_vp_"
+                        f"{scenario_name}{self.default_extension}"
+                    )
+                if block.get("expected_deforestation_scenarios") is not None:
+                    vp_block["expected_deforestation_scenarios"] = block[
+                        "expected_deforestation_scenarios"
+                    ]
                 self.run_vp(vp_block)
                 workflow_outputs["vp"] = self.summary[-1]["outputs"]
 

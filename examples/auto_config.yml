@@ -8,8 +8,16 @@ working_directory: C:/path/to/your/udef_project
 output_prefix: acre
 output_extension: tif
 
-# Required for the VP stage.
-expected_deforestation: 10000
+# Required for automatic BAU, low, medium, and high VP scenarios.
+# BAU = total HRP deforestation area (ha) / historical_period_years.
+historical_period_years: 10
+
+# Optional: override automatic scenarios manually.
+# expected_deforestation_scenarios:
+#   bau: 10000
+#   low: 9000
+#   medium: 11000
+#   high: 12000
 
 # Default workflow when "stages" is omitted:
 # 1. nrt
