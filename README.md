@@ -4,12 +4,14 @@
 [![CI](https://github.com/abrandaojr/udefa/actions/workflows/ci.yml/badge.svg)](https://github.com/abrandaojr/udefa/actions/workflows/ci.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-green.svg)](LICENSE)
 
-This repository is a maintained fork of
+This repository is an adapted version of
 [ClarkCGA/UDef-ARP](https://github.com/ClarkCGA/UDef-ARP), the original
-UDef-ARP repository developed by Clark Labs in collaboration with TerraCarbon.
-This fork preserves the original GPLv3 license, credits, documentation assets,
-and application structure, while adding repository polish, CI checks, and a
-documented fix for modeling region ID overflow.
+UDef-ARP project developed by Clark Labs in collaboration with TerraCarbon.
+It is not presented as a simple copy of the Clark repository. It preserves the
+original GPLv3 license, credits, documentation assets, and core application
+structure, while adding adaptation-specific changes: YAML-driven automation,
+clear input-layer conventions, repository polish, CI checks, and a documented
+fix for modeling region ID overflow.
 
 Unplanned Deforestation Allocated Risk Modeling and Mapping Procedure
 (UDef-ARP) is a Windows desktop application for implementing the modeling and
@@ -62,6 +64,7 @@ workflow.
 - Original developers: Clark Labs, Clark University
 - Collaborating organization: TerraCarbon
 - Upstream project: Unplanned Deforestation Allocated Risk Modeling and Mapping Procedure (UDef-ARP)
+- Relationship to upstream: adapted version based on the Clark Labs project, not a direct unmodified copy
 - Upstream reference checked for this fork: `ClarkCGA/UDef-ARP` tag `v2.14.1`, commit `14acdaf`
 - Protocol reference:
   [Verra VT0007 Unplanned Deforestation Allocation v1.0](https://verra.org/wp-content/uploads/2024/02/VT0007-Unplanned-Deforestation-Allocation-v1.0.pdf)
@@ -69,8 +72,9 @@ workflow.
 
 All core application code, GUI assets, fonts, documentation PDFs, logos, and
 sample workflow materials originate from the upstream UDef-ARP project unless
-otherwise stated. Changes made in this fork are intended to preserve provenance
-and improve maintainability, documentation, and reproducibility.
+otherwise stated. Adaptations in this repository are intended to preserve
+provenance while improving automation, maintainability, documentation, and
+reproducibility.
 
 To compare this fork with the upstream source:
 
@@ -311,4 +315,4 @@ representative raster inputs.
 This project is distributed under the GNU General Public License v3. See
 [`LICENSE`](LICENSE).
 
-See [`NOTICE.md`](NOTICE.md) for upstream attribution and fork-specific notes.
+See [`NOTICE.md`](NOTICE.md) for upstream attribution and adaptation notes.

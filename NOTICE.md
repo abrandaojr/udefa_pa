@@ -1,6 +1,6 @@
 # Notice
 
-This repository is a maintained fork of the original UDef-ARP project:
+This repository is an adapted version of the original UDef-ARP project:
 
 https://github.com/ClarkCGA/UDef-ARP
 
@@ -31,17 +31,19 @@ Verra VT0007 Unplanned Deforestation Allocation v1.0
 https://verra.org/wp-content/uploads/2024/02/VT0007-Unplanned-Deforestation-Allocation-v1.0.pdf
 ```
 
-## Fork Notes
+## Adaptation Notes
 
-This fork preserves the original GPLv3 license and upstream project
-attribution. Unless otherwise stated, the application code, GUI files,
-documentation PDFs, images, logos, and fonts originate from the upstream
-UDef-ARP project.
+This repository is not presented as a direct unmodified copy of the Clark Labs
+repository. It is an adapted version that preserves the original GPLv3 license
+and upstream project attribution. Unless otherwise stated, the application code,
+GUI files, documentation PDFs, images, logos, and fonts originate from the
+upstream UDef-ARP project.
 
-Fork-specific changes include repository documentation polish, GitHub Actions
-syntax checks, `.gitignore`, and a documented fix that stores modeling region
-IDs as `numpy.int32` / `GDT_Int32` to avoid `int16` overflow in jurisdictions
-with many administrative divisions.
+Adaptation-specific changes include YAML-driven workflow automation, exact
+input-layer conventions, repository documentation polish, GitHub Actions syntax
+checks, `.gitignore`, and a documented fix that stores modeling region IDs as
+`numpy.int32` / `GDT_Int32` to avoid `int16` overflow in jurisdictions with many
+administrative divisions.
 
 ## License
 
