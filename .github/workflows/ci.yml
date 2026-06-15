@@ -17,6 +17,15 @@ jobs:
         with:
           python-version: "3.10"
 
+      - name: Install lightweight automation dependency
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml
+
       - name: Compile Python files
         run: |
-          python -m compileall -q UDef-ARP.py allocation_tool.py vulnerability_map.py model_evaluation.py
+          python -m compileall -q UDef-ARP.py udef_auto.py allocation_tool.py vulnerability_map.py model_evaluation.py
+
+      - name: Check automation help
+        run: |
+          python udef_auto.py --help
