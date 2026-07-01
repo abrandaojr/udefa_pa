@@ -328,7 +328,21 @@ def build_raster_products(
     products.extend(_forest_to_nonforest_products(settings, prepared, organized))
     products.extend(_udef_a_fcbm_products(settings, prepared, organized))
     products.extend(_dmjss_mb_products(settings, prepared, organized))
-    return products
+    return _normalize_raster_products(products, settings)
+
+
+def _normalize_raster_products(products: list[RasterProduct], settings: dict[str, Any]) -> list[RasterProduct]:
+    """Return raster products with one canonical EPSG/resolution suffix."""
+    normalized: list[RasterProduct] = []
+    seen: set[str] = set()
+    for product in products:
+        name = _with_projection_suffix(product.name, settings)
+        if name in seen:
+            LOGGER.debug("Skipping duplicate raster product after normalization: %s", name)
+            continue
+        seen.add(name)
+        normalized.append(RasterProduct(name=name, image=product.image, description=product.description))
+    return normalized
 
 
 def write_change_area_tables(
@@ -391,7 +405,7 @@ def submit_raster_exports(
     region = area_of_interest.geometry()
 
     for product in products:
-        export_name = _with_projection_suffix(product.name, settings)
+        export_name = product.name
         if export_name in pending:
             continue
         task = ee.batch.Export.image.toDrive(
@@ -613,13 +627,14 @@ def convert_geotiffs_to_idrisi(geotiff_directory: Path, idrisi_directory: Path) 
     their old, stale file names alongside the current ones.
     """
     idrisi_directory.mkdir(parents=True, exist_ok=True)
-    current_stems = {geotiff.stem for geotiff in _iter_geotiff_files(geotiff_directory)}
+    _remove_non_target_geotiffs(geotiff_directory)
+    current_stems = {geotiff.stem for geotiff in _iter_target_geotiff_files(geotiff_directory)}
     for stale_path in list(idrisi_directory.glob("*.rst")) + list(idrisi_directory.glob("*.rdc")) + list(idrisi_directory.glob("*.pal")):
         if stale_path.stem not in current_stems:
             stale_path.unlink(missing_ok=True)
 
     written = []
-    for geotiff in _iter_geotiff_files(geotiff_directory):
+    for geotiff in _iter_target_geotiff_files(geotiff_directory):
         try:
             if _idrisi_outputs_current(geotiff, idrisi_directory):
                 LOGGER.debug("Skipping current IDRISI raster: %s", geotiff.stem)
@@ -634,8 +649,9 @@ def convert_geotiffs_to_idrisi(geotiff_directory: Path, idrisi_directory: Path) 
 def build_geotiff_mosaics(geotiff_directory: Path, mosaic_directory: Path) -> list[Path]:
     """Create missing or stale LZW-compressed GeoTIFF mosaics per exported raster product."""
     mosaic_directory.mkdir(parents=True, exist_ok=True)
+    _remove_non_target_geotiffs(mosaic_directory)
     groups: dict[str, list[Path]] = {}
-    for path in _iter_geotiff_files(geotiff_directory):
+    for path in _iter_target_geotiff_files(geotiff_directory):
         groups.setdefault(_geotiff_product_stem(path), []).append(path)
 
     mosaics: list[Path] = []
@@ -711,6 +727,27 @@ def _iter_geotiff_files(directory: Path) -> list[Path]:
         for path in directory.iterdir()
         if path.is_file() and path.suffix.lower() in {".tif", ".tiff"}
     )
+
+
+def _iter_target_geotiff_files(directory: Path) -> list[Path]:
+    return [path for path in _iter_geotiff_files(directory) if _is_target_geotiff(path)]
+
+
+def _remove_non_target_geotiffs(directory: Path) -> None:
+    for path in _iter_geotiff_files(directory):
+        if _is_target_geotiff(path):
+            continue
+        path.unlink(missing_ok=True)
+        LOGGER.warning("Removed non-target GeoTIFF mosaic: %s", path.name)
+
+
+def _is_target_geotiff(path: Path) -> bool:
+    try:
+        with rasterio.open(path) as dataset:
+            return _dataset_is_target_grid(dataset)
+    except Exception as exc:
+        LOGGER.warning("Ignoring unreadable GeoTIFF %s: %s", path.name, exc)
+        return False
 
 
 def _assert_common_grid(
@@ -1450,6 +1487,8 @@ _IDRISI_NODATA = -9999
 
 def _needs_reproject(dataset: rasterio.DatasetReader) -> bool:
     """Return True if the GeoTIFF must be reprojected to EPSG:5880 before IDRISI export."""
+    if not _dataset_is_target_grid(dataset):
+        return True
     if dataset.crs:
         return bool(dataset.crs.is_geographic)
     t = dataset.transform
@@ -1462,6 +1501,15 @@ def _needs_reproject(dataset: rasterio.DatasetReader) -> bool:
         and -180.0 <= x_max <= 180.0
         and -90.0 <= y_min <= 90.0
         and -90.0 <= y_max <= 90.0
+    )
+
+
+def _dataset_is_target_grid(dataset: rasterio.DatasetReader, tolerance: float = 1e-6) -> bool:
+    if dataset.crs is None or CRS.from_user_input(dataset.crs) != _IDRISI_TARGET_CRS:
+        return False
+    return (
+        abs(abs(dataset.transform.a) - _IDRISI_TARGET_RESOLUTION_M) <= tolerance
+        and abs(abs(dataset.transform.e) - _IDRISI_TARGET_RESOLUTION_M) <= tolerance
     )
 
 

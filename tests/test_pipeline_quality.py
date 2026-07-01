@@ -11,10 +11,15 @@ from rasterio.transform import from_origin
 
 from src.mapbiomas_ctrees.catalog import expected_csv_exports, expected_raster_products
 from src.mapbiomas_ctrees.data_quality import required_csv_gate, required_raster_gate
-from src.mapbiomas_ctrees.google_services import _local_download_is_current
+from src.mapbiomas_ctrees.google_services import _local_download_is_current, _raster_export_name_matches_target_grid
 from src.mapbiomas_ctrees.local_tables import _first_match
 from src.mapbiomas_ctrees.pipeline_state import audit_pipeline_state
-from src.mapbiomas_ctrees.raster_exports import build_geotiff_mosaics, convert_geotiffs_to_idrisi
+from src.mapbiomas_ctrees.raster_exports import (
+    RasterProduct,
+    _normalize_raster_products,
+    build_geotiff_mosaics,
+    convert_geotiffs_to_idrisi,
+)
 from src.mapbiomas_ctrees.settings import Scenario
 
 
@@ -30,6 +35,33 @@ class PipelineQualityTests(unittest.TestCase):
         self.assertIn("XTab_30m_A_100pct_1985-2024_x_DMJSS", {item.name for item in csvs})
         self.assertIn("UDefA_MB_LULC_T0_1985_EPSG_5880_30m", {item.name for item in rasters})
         self.assertIn("UDefA_MB_Persistence_ScenA_100pct_1985-2024_EPSG_5880_30m", {item.name for item in rasters})
+
+    def test_raster_product_names_are_canonicalized_once(self) -> None:
+        settings = {"grid": {"crs": "EPSG:5880", "scale_m": 30}, "earth_engine": {"scale_native_m": 30}}
+        products = [
+            RasterProduct("Tiny_Test", None, "base"),  # type: ignore[arg-type]
+            RasterProduct("Tiny_Test_EPSG_5880_30m", None, "already canonical"),  # type: ignore[arg-type]
+        ]
+
+        normalized = _normalize_raster_products(products, settings)
+
+        self.assertEqual([product.name for product in normalized], ["Tiny_Test_EPSG_5880_30m"])
+
+    def test_drive_raster_download_filter_requires_target_suffix(self) -> None:
+        settings = {"grid": {"crs": "EPSG:5880", "scale_m": 30}, "earth_engine": {"scale_native_m": 30}}
+
+        self.assertTrue(
+            _raster_export_name_matches_target_grid(
+                "Tiny_Test_EPSG_5880_30m-0000000000-0000000000.tif",
+                settings,
+            )
+        )
+        self.assertFalse(
+            _raster_export_name_matches_target_grid(
+                "Tiny_Test_30m-0000000000-0000000000.tif",
+                settings,
+            )
+        )
 
     def test_audit_marks_required_csv_missing(self) -> None:
         scenarios = [Scenario("A", 100, 1985, 2024)]
@@ -218,6 +250,68 @@ class PipelineQualityTests(unittest.TestCase):
             second = build_geotiff_mosaics(tile_dir, mosaic_dir)
             self.assertEqual([path.name for path in second], ["Tiny_Test.tif"])
             self.assertEqual(mosaic.stat().st_mtime, first_mtime)
+
+    def test_geotiff_mosaics_only_use_epsg_5880_30m_tiles(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tile_dir = root / "tiles"
+            mosaic_dir = root / "geotiff"
+            tile_dir.mkdir()
+            data = np.array([[1]], dtype=np.int16)
+            valid_path = tile_dir / "Tiny_Test_EPSG_5880_30m-00000-00000.tif"
+            invalid_path = tile_dir / "Tiny_Test_EPSG_4326_30m-00000-00000.tif"
+            for path, crs, transform in (
+                (valid_path, "EPSG:5880", from_origin(0, 30, 30, 30)),
+                (invalid_path, "EPSG:4326", from_origin(-52, -1, 0.0002695, 0.0002695)),
+            ):
+                with rasterio.open(
+                    path,
+                    "w",
+                    driver="GTiff",
+                    height=1,
+                    width=1,
+                    count=1,
+                    dtype="int16",
+                    crs=crs,
+                    transform=transform,
+                    nodata=-9999,
+                ) as dataset:
+                    dataset.write(data, 1)
+
+            mosaics = build_geotiff_mosaics(tile_dir, mosaic_dir)
+            self.assertEqual([path.name for path in mosaics], ["Tiny_Test_EPSG_5880_30m.tif"])
+            self.assertFalse((mosaic_dir / "Tiny_Test_EPSG_4326_30m.tif").exists())
+
+    def test_idrisi_conversion_only_uses_epsg_5880_30m_geotiffs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            geotiff_dir = root / "geotiff"
+            idrisi_dir = root / "idrisi"
+            geotiff_dir.mkdir()
+            idrisi_dir.mkdir()
+            path = geotiff_dir / "Old_EPSG_4326_30m.tif"
+            data = np.array([[1]], dtype=np.int16)
+            with rasterio.open(
+                path,
+                "w",
+                driver="GTiff",
+                height=1,
+                width=1,
+                count=1,
+                dtype="int16",
+                crs="EPSG:4326",
+                transform=from_origin(-52, -1, 0.0002695, 0.0002695),
+                nodata=-9999,
+            ) as dataset:
+                dataset.write(data, 1)
+            (idrisi_dir / "Old_EPSG_4326_30m.rst").write_bytes(b"stale")
+            (idrisi_dir / "Old_EPSG_4326_30m.rdc").write_text("stale\n", encoding="ascii")
+
+            converted = convert_geotiffs_to_idrisi(geotiff_dir, idrisi_dir)
+            self.assertEqual(converted, [])
+            self.assertFalse(path.exists())
+            self.assertFalse((idrisi_dir / "Old_EPSG_4326_30m.rst").exists())
+            self.assertFalse((idrisi_dir / "Old_EPSG_4326_30m.rdc").exists())
 
     def test_download_manifest_backfill_rejects_local_file_older_than_drive(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

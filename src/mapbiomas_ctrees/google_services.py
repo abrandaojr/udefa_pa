@@ -316,6 +316,23 @@ def download_drive_raster_exports(
             if not name.lower().endswith((".tif", ".tiff")):
                 continue
             target = target_directory / name
+            if not _raster_export_name_matches_target_grid(name, settings):
+                if target.exists():
+                    target.unlink(missing_ok=True)
+                    _download_manifest_path(target).unlink(missing_ok=True)
+                    _rejected_download_manifest_path(target).unlink(missing_ok=True)
+                    LOGGER.warning("Removed local legacy raster export: %s", name)
+                LOGGER.info("Skipping redundant raster export outside target grid naming: %s", name)
+                continue
+            if _rejected_download_matches(target, item):
+                LOGGER.info("Skipping previously rejected non-target raster export: %s", name)
+                continue
+            if target.exists() and not _local_geotiff_matches_target_grid(target):
+                target.unlink(missing_ok=True)
+                _download_manifest_path(target).unlink(missing_ok=True)
+                _write_rejected_download_manifest(target, item, "local GeoTIFF is not EPSG:5880 at 30 m")
+                LOGGER.warning("Removed local non-target raster export: %s", name)
+                continue
             if _drive_export_is_empty(item):
                 target.unlink(missing_ok=True)
                 _download_manifest_path(target).unlink(missing_ok=True)
@@ -342,6 +359,14 @@ def download_drive_raster_exports(
             )
             if progress_callback is not None:
                 progress_callback("Compressing", target.name)
+            if not _local_geotiff_matches_target_grid(target):
+                _write_rejected_download_manifest(target, item, "downloaded GeoTIFF is not EPSG:5880 at 30 m")
+                target.unlink(missing_ok=True)
+                _download_manifest_path(target).unlink(missing_ok=True)
+                LOGGER.warning("Rejected non-target raster export after download: %s", name)
+                if progress_callback is not None:
+                    progress_callback("Rejected", target.name)
+                continue
             _rewrite_geotiff_lzw(target)
             _write_download_manifest(target, item)
             downloaded.append(target)
@@ -352,6 +377,21 @@ def download_drive_raster_exports(
         if not page_token:
             break
     return sorted(set(downloaded))
+
+
+def _target_raster_suffix(settings: dict[str, Any]) -> str:
+    grid = settings.get("grid", {})
+    earth_engine = settings.get("earth_engine", {})
+    crs = str(grid.get("crs") or earth_engine.get("crs") or "EPSG:5880")
+    scale = grid.get("scale_m") or earth_engine.get("scale_native_m") or 30
+    return f"{crs.replace(':', '_').replace('/', '_')}_{scale}m"
+
+
+def _raster_export_name_matches_target_grid(name: str, settings: dict[str, Any]) -> bool:
+    stem = Path(str(name)).stem
+    parts = stem.rsplit("-", 2)
+    product_stem = parts[0] if len(parts) == 3 and all(part.isdigit() for part in parts[1:]) else stem
+    return product_stem.endswith(_target_raster_suffix(settings))
 
 
 def upload_report_image(drive_service: Any, settings: dict[str, Any], image_path: Path) -> str:
@@ -535,8 +575,28 @@ def _download_manifest_path(target: Path) -> Path:
     return target.with_suffix(target.suffix + ".drive.json")
 
 
+def _rejected_download_manifest_path(target: Path) -> Path:
+    return target.with_suffix(target.suffix + ".rejected.json")
+
+
 def _download_manifest_matches(target: Path, drive_item: dict[str, Any]) -> bool:
     manifest_path = _download_manifest_path(target)
+    if not manifest_path.exists():
+        return False
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if str(manifest.get("id", "")) != str(drive_item.get("id", "")):
+        return False
+    expected_size = _drive_file_size(drive_item)
+    if expected_size is not None and manifest.get("size") != expected_size:
+        return False
+    return True
+
+
+def _rejected_download_matches(target: Path, drive_item: dict[str, Any]) -> bool:
+    manifest_path = _rejected_download_manifest_path(target)
     if not manifest_path.exists():
         return False
     try:
@@ -562,10 +622,33 @@ def _write_download_manifest(target: Path, drive_item: dict[str, Any], *, assume
     _download_manifest_path(target).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
 
+def _write_rejected_download_manifest(target: Path, drive_item: dict[str, Any], reason: str) -> None:
+    manifest = {
+        "id": str(drive_item.get("id", "")),
+        "name": str(drive_item.get("name", target.name)),
+        "size": _drive_file_size(drive_item),
+        "modifiedTime": drive_item.get("modifiedTime"),
+        "rejected_reason": reason,
+    }
+    _rejected_download_manifest_path(target).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+
 def _local_geotiff_is_readable(target: Path) -> bool:
     try:
         with rasterio.open(target) as dataset:
             return dataset.count >= 1 and dataset.width > 0 and dataset.height > 0
+    except Exception:
+        return False
+
+
+def _local_geotiff_matches_target_grid(target: Path) -> bool:
+    try:
+        with rasterio.open(target) as dataset:
+            return (
+                str(dataset.crs) == "EPSG:5880"
+                and abs(abs(dataset.transform.a) - 30.0) <= 1e-6
+                and abs(abs(dataset.transform.e) - 30.0) <= 1e-6
+            )
     except Exception:
         return False
 
