@@ -6,6 +6,8 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+import shutil
+import textwrap
 from typing import Any
 
 
@@ -29,7 +31,7 @@ class AuditPanel:
 
 
 class WorkflowProgress:
-    """Write a compact Markdown progress table after each workflow update."""
+    """Write and print a compact progress table after each workflow update."""
 
     DEFAULT_STEPS = (
         "Auditoria",
@@ -44,13 +46,14 @@ class WorkflowProgress:
         "Relatorios",
     )
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, print_to_terminal: bool = True) -> None:
         self.path = path
+        self.print_to_terminal = print_to_terminal
         self.rows: OrderedDict[str, ProgressRow] = OrderedDict(
             (step, ProgressRow(step=step)) for step in self.DEFAULT_STEPS
         )
         self.audit_panel = AuditPanel()
-        self.write()
+        self.write(print_to_terminal=False)
 
     def update(self, step: str, status: str, detail: str = "", progress: str = "-") -> None:
         if step not in self.rows:
@@ -89,7 +92,7 @@ class WorkflowProgress:
         )
         self.write()
 
-    def write(self) -> None:
+    def write(self, print_to_terminal: bool = True) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         lines = [
             "# Progresso do workflow",
@@ -115,6 +118,8 @@ class WorkflowProgress:
             )
         self._append_audit_panel(lines)
         self.path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        if self.print_to_terminal and print_to_terminal:
+            print("\n".join(self._terminal_lines()), flush=True)
 
     def _append_audit_panel(self, lines: list[str]) -> None:
         panel = self.audit_panel
@@ -160,9 +165,98 @@ class WorkflowProgress:
             for name, kind, status, stages in panel.required_rows:
                 lines.append(f"| {_cell(name)} | {_cell(kind)} | {_cell(status)} | {_cell(stages)} |")
 
+    def _terminal_lines(self) -> list[str]:
+        width = max(80, shutil.get_terminal_size((120, 20)).columns)
+        detail_width = max(24, width - 68)
+        separator = (
+            "+"
+            + "-" * 22
+            + "+"
+            + "-" * 14
+            + "+"
+            + "-" * 12
+            + "+"
+            + "-" * detail_width
+            + "+"
+        )
+        lines = [
+            "",
+            "Progresso do workflow",
+            separator,
+            _terminal_row(("Etapa", "Status", "Progresso", "Detalhe"), detail_width),
+            separator,
+        ]
+        for row in self.rows.values():
+            lines.append(
+                _terminal_row(
+                    (
+                        row.step,
+                        row.status,
+                        row.progress,
+                        row.detail or row.updated_at,
+                    ),
+                    detail_width,
+                )
+            )
+        lines.append(separator)
+        lines.extend(self._terminal_audit_lines(width))
+        return lines
+
+    def _terminal_audit_lines(self, width: int) -> list[str]:
+        panel = self.audit_panel
+        if not panel.summary and not panel.issues and not panel.required_rows:
+            return []
+        lines = ["Qualidade dos dados"]
+        summary_keys = ("total", "required", "required_not_ready", "ready", "partial", "missing", "invalid", "optional_missing", "observed")
+        summary = [
+            f"{key}={panel.summary[key]}"
+            for key in summary_keys
+            if key in panel.summary
+        ]
+        if summary:
+            lines.append("  " + ", ".join(summary))
+        if panel.issues:
+            lines.append("Problemas ativos:")
+            for issue in panel.issues[:5]:
+                lines.append("  - " + _terminal_text(issue, max(40, width - 6)))
+            if len(panel.issues) > 5:
+                lines.append(f"  - ... mais {len(panel.issues) - 5} problema(s)")
+        if panel.required_rows:
+            lines.append("Produtos obrigatorios pendentes/principais:")
+            for name, kind, status, stages in panel.required_rows[:8]:
+                detail = f"{name} [{kind}/{status}] {stages}"
+                lines.append("  - " + _terminal_text(detail, max(40, width - 6)))
+            if len(panel.required_rows) > 8:
+                lines.append(f"  - ... mais {len(panel.required_rows) - 8} produto(s)")
+        if panel.state_path or panel.audit_path:
+            lines.append(f"Arquivos: estado={panel.state_path} auditoria={panel.audit_path}")
+        return lines
+
 
 def _cell(value: str) -> str:
     return str(value).replace("|", "/").replace("\r", " ").replace("\n", " ").strip()
+
+
+def _terminal_row(values: tuple[str, str, str, str], detail_width: int) -> str:
+    step, status, progress, detail = values
+    return (
+        "| "
+        + _terminal_text(step, 20).ljust(20)
+        + " | "
+        + _terminal_text(status, 12).ljust(12)
+        + " | "
+        + _terminal_text(progress, 10).rjust(10)
+        + " | "
+        + _terminal_text(detail, detail_width - 2).ljust(detail_width - 2)
+        + " |"
+    )
+
+
+def _terminal_text(value: str, width: int) -> str:
+    text = _cell(value)
+    if len(text) <= width:
+        return text
+    return textwrap.shorten(text, width=width, placeholder="...")
 
 
 def _stage_summary(stages: dict[str, Any]) -> str:
