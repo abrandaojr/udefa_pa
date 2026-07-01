@@ -146,7 +146,7 @@ class PipelineQualityTests(unittest.TestCase):
                 idrisi_directory=root / "idrisi",
             )
 
-        self.assertTrue(any("Artefato invalido: derived_empty" in issue for issue in audit.issues))
+        self.assertTrue(any("Invalid artifact: derived_empty" in issue for issue in audit.issues))
 
     def test_first_match_rejects_ambiguous_required_csv(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

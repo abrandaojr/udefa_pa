@@ -29,7 +29,7 @@ def required_csv_gate(audit: PipelineAudit) -> QualityGateResult:
         for product in audit.products.values()
         if product.kind == "csv" and product.required and product.status != "ready"
     ]
-    failures.extend(issue for issue in audit.issues if "Artefato ambiguo" in issue)
+    failures.extend(issue for issue in audit.issues if "Ambiguous artifact" in issue)
     return QualityGateResult(ok=not failures, name="required_csv", failures=failures)
 
 
@@ -45,7 +45,7 @@ def required_raster_gate(audit: PipelineAudit) -> QualityGateResult:
 
 def blocking_residual_files_gate(audit: PipelineAudit) -> QualityGateResult:
     """Surface temporary files that indicate an interrupted or active artifact write."""
-    failures = [issue for issue in audit.issues if "Arquivo temporario residual" in issue]
+    failures = [issue for issue in audit.issues if "Residual temporary file" in issue]
     return QualityGateResult(ok=not failures, name="blocking_residual_files", failures=failures)
 
 

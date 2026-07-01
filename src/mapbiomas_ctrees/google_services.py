@@ -331,7 +331,7 @@ def download_drive_raster_exports(
             size_note = f" ({expected_size / (1024 * 1024):.1f} MiB)" if expected_size is not None else ""
             LOGGER.info("Raster download starting: %s%s", target.name, size_note)
             if progress_callback is not None:
-                progress_callback("Baixando", f"{target.name}{size_note}")
+                progress_callback("Downloading", f"{target.name}{size_note}")
             _download_file(
                 drive_service,
                 item["id"],
@@ -341,13 +341,13 @@ def download_drive_raster_exports(
                 progress_callback=progress_callback,
             )
             if progress_callback is not None:
-                progress_callback("Comprimindo", target.name)
+                progress_callback("Compressing", target.name)
             _rewrite_geotiff_lzw(target)
             _write_download_manifest(target, item)
             downloaded.append(target)
             LOGGER.info("Raster download finished: %s", target.name)
             if progress_callback is not None:
-                progress_callback("Baixado", target.name)
+                progress_callback("Downloaded", target.name)
         page_token = response.get("nextPageToken")
         if not page_token:
             break
@@ -631,7 +631,7 @@ def _download_file(
                         if percent >= last_percent + 10 or done:
                             LOGGER.info("%s %s: %d%%", progress_label, target.name, percent)
                             if progress_callback is not None:
-                                progress_callback("Baixando", f"{target.name} ({percent}%)")
+                                progress_callback("Downloading", f"{target.name} ({percent}%)")
                             last_percent = percent
 
             downloaded_size = temporary.stat().st_size if temporary.exists() else 0

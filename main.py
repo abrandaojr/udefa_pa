@@ -192,8 +192,8 @@ def main() -> None:
     project_settings = load_settings(args.config, output_root=args.output_root)
     ensure_output_directories(project_settings)
     configure_logging(project_settings.output_directories["logs"], verbose=args.verbose)
-    progress = WorkflowProgress(project_settings.output_directories["logs"] / "progresso_workflow.md")
-    LOGGER.info("Tabela de progresso: %s", progress.path)
+    progress = WorkflowProgress(project_settings.output_directories["logs"] / "workflow_progress.md")
+    LOGGER.info("Workflow progress table: %s", progress.path)
 
     raw_settings = project_settings.raw
     pixel_area_hectares = (float(raw_settings["earth_engine"]["scale_native_m"]) ** 2) / 10000
@@ -230,9 +230,9 @@ def main() -> None:
     docs_service = None
     sheets_service = None
     if args.auth_only:
-        progress.update("Credenciais Google", "Autenticando", "Preparando credenciais Google")
+        progress.update("Google Credentials", "Authenticating", "Preparing Google credentials")
         load_google_credentials(raw_settings)
-        progress.update("Credenciais Google", "Pronto", "Credenciais Google OK")
+        progress.update("Google Credentials", "Ready", "Google credentials are ready")
         LOGGER.info("Google OAuth credentials are ready.")
         return
 
@@ -246,10 +246,10 @@ def main() -> None:
         or args.sync_rasters
         or needs_google_report
     ):
-        progress.update("Credenciais Google", "Carregando", "Inicializando Drive")
+        progress.update("Google Credentials", "Loading", "Initializing Drive")
         credentials = load_google_credentials(raw_settings)
         drive_service = build_drive_service(credentials)
-        progress.update("Credenciais Google", "Pronto", "Drive inicializado")
+        progress.update("Google Credentials", "Ready", "Drive initialized")
     if needs_google_report:
         docs_service = build_docs_service(credentials)
         sheets_service = build_sheets_service(credentials)
@@ -286,23 +286,23 @@ def main() -> None:
         audit_path,
     )
     progress.update(
-        "Auditoria",
-        "Pronto",
-        f"{audit.summary.get('total', 0)} produto(s), "
-        f"{audit.summary.get('required_not_ready', 0)} obrigatorio(s) pendente(s), "
-        f"{len(audit.issues)} problema(s): {audit_path}",
+        "Audit",
+        "Ready",
+        f"{audit.summary.get('total', 0)} product(s), "
+        f"{audit.summary.get('required_not_ready', 0)} required product(s) pending, "
+        f"{len(audit.issues)} issue(s): {audit_path}",
     )
     if args.audit_only:
         progress.update(
-            "Auditoria",
-            "Pronto",
-            f"{audit.summary.get('total', 0)} produto(s), {len(audit.issues)} problema(s): {audit_path}",
+            "Audit",
+            "Ready",
+            f"{audit.summary.get('total', 0)} product(s), {len(audit.issues)} issue(s): {audit_path}",
         )
         return
 
     if args.submit_exports or args.submit_rasters or args.submit_change_areas:
         initialize_earth_engine(raw_settings["earth_engine"]["project"], credentials=credentials)
-        progress.update("Earth Engine", "Inicializado", "Projeto Earth Engine pronto")
+        progress.update("Earth Engine", "Initialized", "Earth Engine project initialized")
         LOGGER.info("1. Data preparation")
         prepared_inputs = prepare_input_data(raw_settings)
 
@@ -319,7 +319,7 @@ def main() -> None:
         products = build_raster_products(raw_settings, project_settings.scenarios, prepared_inputs, organized_data)
 
         if args.submit_exports:
-            progress.update("Earth Engine", "Submetendo", "Exports CSV")
+            progress.update("Earth Engine", "Submitting", "CSV exports")
             LOGGER.info("3. Data analysis: submitting Earth Engine table exports")
             tasks = submit_table_exports(
                 settings=raw_settings,
@@ -333,14 +333,14 @@ def main() -> None:
             if change_task is not None:
                 tasks.append(change_task)
             if args.no_wait:
-                progress.update("Earth Engine", "Na fila", "Exports CSV submetidos")
+                progress.update("Earth Engine", "Queued", "CSV exports submitted")
                 LOGGER.info("Table exports submitted. Wait for Earth Engine completion before analysis.")
                 return
-            progress.update("Earth Engine", "Aguardando", "Exports CSV")
+            progress.update("Earth Engine", "Waiting", "CSV exports")
             wait_for_tasks(tasks)
-            progress.update("Earth Engine", "Pronto", "Exports CSV finalizados")
+            progress.update("Earth Engine", "Ready", "CSV exports completed")
         if args.submit_rasters:
-            progress.update("Earth Engine", "Submetendo", "Exports raster")
+            progress.update("Earth Engine", "Submitting", "Raster exports")
             LOGGER.info("3. Data analysis: submitting aligned Earth Engine raster exports")
             ensure_drive_raster_folder(drive_service, raw_settings)
             tasks = submit_raster_exports(
@@ -349,24 +349,24 @@ def main() -> None:
                 area_of_interest=prepared_inputs.area_of_interest,
             )
             if args.no_wait:
-                progress.update("Earth Engine", "Na fila", "Exports raster submetidos")
+                progress.update("Earth Engine", "Queued", "Raster exports submitted")
                 LOGGER.info("Raster exports submitted. Wait for Earth Engine completion before download.")
             else:
-                progress.update("Earth Engine", "Aguardando", "Exports raster")
+                progress.update("Earth Engine", "Waiting", "Raster exports")
                 wait_for_raster_tasks(tasks)
-                progress.update("Earth Engine", "Pronto", "Exports raster finalizados")
+                progress.update("Earth Engine", "Ready", "Raster exports completed")
         if args.submit_change_areas:
-            progress.update("Earth Engine", "Submetendo", "Change-area export")
+            progress.update("Earth Engine", "Submitting", "Change-area export")
             LOGGER.info("3. Data analysis: submitting forest-to-nonforest change-area export")
             task = submit_change_area_export(raw_settings, products, prepared_inputs.area_of_interest)
             if args.no_wait:
-                progress.update("Earth Engine", "Na fila", "Change-area export submetido")
+                progress.update("Earth Engine", "Queued", "Change-area export submitted")
                 LOGGER.info("Change-area export submitted. Wait for Earth Engine completion before download.")
                 return
             if task is not None:
-                progress.update("Earth Engine", "Aguardando", "Change-area export")
+                progress.update("Earth Engine", "Waiting", "Change-area export")
                 wait_for_tasks([task])
-                progress.update("Earth Engine", "Pronto", "Change-area export finalizado")
+                progress.update("Earth Engine", "Ready", "Change-area export completed")
 
     if args.download_exports:
         if drive_service is None:
@@ -374,13 +374,13 @@ def main() -> None:
         local_tables = list(table_directory.glob("*.csv")) if table_directory.exists() else []
         csv_gate = required_csv_gate(audit)
         if csv_gate.ok:
-            progress.update("CSV exports", "Pronto", f"{len(local_tables)} CSV locais; obrigatorios OK")
+            progress.update("CSV exports", "Ready", f"{len(local_tables)} local CSV files; required products ready")
             LOGGER.info(
                 "Data analysis: %d CSV table(s) already present locally and required CSVs are ready. Skipping Drive check.",
                 len(local_tables),
             )
         else:
-            progress.update("CSV exports", "Baixando", csv_gate.summary)
+            progress.update("CSV exports", "Downloading", csv_gate.summary)
             LOGGER.info("3. Data analysis: downloading exported CSV files")
             download_drive_exports(drive_service, raw_settings, table_directory)
             audit, _state_path, _audit_path = _refresh_pipeline_audit(
@@ -394,13 +394,13 @@ def main() -> None:
                 progress,
             )
             assert_gate(required_csv_gate(audit))
-            progress.update("CSV exports", "Pronto", f"{len(list(table_directory.glob('*.csv')))} CSV locais; obrigatorios OK")
+            progress.update("CSV exports", "Ready", f"{len(list(table_directory.glob('*.csv')))} local CSV files; required products ready")
             _log_folder_summary("CSV exports downloaded", table_directory, ("*.csv",))
 
     if args.download_rasters:
         if drive_service is None:
             raise RuntimeError("Google Drive service was not initialized.")
-        progress.update("Download raster", "Baixando", "GeoTIFF raster exports")
+        progress.update("Download raster", "Downloading", "GeoTIFF raster exports")
         LOGGER.info("3. Data analysis: downloading aligned GeoTIFF raster exports")
         download_drive_raster_exports(
             drive_service,
@@ -408,10 +408,10 @@ def main() -> None:
             geotiff_tile_directory,
             lambda status, detail: progress.update("Download raster", status, detail),
         )
-        progress.update("Mosaicos GeoTIFF", "Gerando", "Recriando mosaicos")
+        progress.update("GeoTIFF mosaics", "Generating", "Rebuilding mosaics")
         _clear_generated_geotiffs(geotiff_directory)
         mosaics = build_geotiff_mosaics(geotiff_tile_directory, geotiff_directory)
-        progress.update("Conversao IDRISI", "Convertendo", f"{len(mosaics)} mosaicos")
+        progress.update("IDRISI conversion", "Converting", f"{len(mosaics)} mosaic(s)")
         converted = convert_geotiffs_to_idrisi(geotiff_directory, idrisi_directory)
         for sidecar_path in geotiff_directory.glob("*.aux.xml"):
             sidecar_path.unlink(missing_ok=True)
@@ -427,8 +427,8 @@ def main() -> None:
             progress,
         )
         assert_gate(required_raster_gate(audit))
-        progress.update("Mosaicos GeoTIFF", "Pronto", f"{len(mosaics)} mosaicos")
-        progress.update("Conversao IDRISI", "Pronto", f"{len(converted)} raster(s)")
+        progress.update("GeoTIFF mosaics", "Ready", f"{len(mosaics)} mosaic(s)")
+        progress.update("IDRISI conversion", "Ready", f"{len(converted)} raster(s)")
         _log_folder_summary("GeoTIFF mosaics validated", geotiff_directory, ("*.tif", "*.tiff"))
         LOGGER.info(
             "Prepared %d local GeoTIFF mosaics in %s and converted %d rasters to IDRISI.",
@@ -443,16 +443,16 @@ def main() -> None:
         local_tiles = _local_geotiffs(geotiff_tile_directory)
         local_mosaics = _local_geotiffs(geotiff_directory)
         missing_products = _missing_expected_rasters(local_mosaics, project_settings.scenarios)
-        progress.update("Sync rasters", "Verificando", f"{len(local_tiles)} tile(s), {len(local_mosaics)} mosaico(s)")
+        progress.update("Sync rasters", "Checking", f"{len(local_tiles)} tile(s), {len(local_mosaics)} mosaic(s)")
         if local_tiles and local_mosaics and not missing_products:
-            progress.update("Sync rasters", "Pronto", "Cache local completo")
+            progress.update("Sync rasters", "Ready", "Local cache is complete")
             LOGGER.info(
                 "Sync rasters: %d tile(s) and %d mosaic(s) already present locally. Skipping Drive check and mosaic rebuild.",
                 len(local_tiles),
                 len(local_mosaics),
             )
             converted = convert_geotiffs_to_idrisi(geotiff_directory, idrisi_directory)
-            progress.update("Conversao IDRISI", "Pronto", f"{len(converted)} raster(s) convertidos agora")
+            progress.update("IDRISI conversion", "Ready", f"{len(converted)} raster(s) converted during this run")
             if converted:
                 LOGGER.info("Converted %d GeoTIFF(s) to IDRISI format in %s.", len(converted), idrisi_directory)
             audit, _state_path, _audit_path = _refresh_pipeline_audit(
@@ -473,7 +473,7 @@ def main() -> None:
                     "; ".join(missing_products),
                 )
             ensure_drive_raster_folder(drive_service, raw_settings)
-            progress.update("Sync rasters", "Drive", "Verificando raster exports")
+            progress.update("Sync rasters", "Drive", "Checking raster exports")
             LOGGER.info("Sync rasters: checking Drive for existing raster exports.")
             download_drive_raster_exports(
                 drive_service,
@@ -483,11 +483,11 @@ def main() -> None:
             )
             local_tiles = _local_geotiffs(geotiff_tile_directory)
             if local_tiles:
-                progress.update("Mosaicos GeoTIFF", "Gerando", f"{len(local_tiles)} tile(s)")
+                progress.update("GeoTIFF mosaics", "Generating", f"{len(local_tiles)} tile(s)")
                 LOGGER.info("Sync rasters: %d tile(s) found. Building mosaics.", len(local_tiles))
                 _clear_generated_geotiffs(geotiff_directory)
                 mosaics = build_geotiff_mosaics(geotiff_tile_directory, geotiff_directory)
-                progress.update("Conversao IDRISI", "Convertendo", f"{len(mosaics)} mosaico(s)")
+                progress.update("IDRISI conversion", "Converting", f"{len(mosaics)} mosaic(s)")
                 converted = convert_geotiffs_to_idrisi(geotiff_directory, idrisi_directory)
                 for sidecar_path in geotiff_directory.glob("*.aux.xml"):
                     sidecar_path.unlink(missing_ok=True)
@@ -502,8 +502,8 @@ def main() -> None:
                     idrisi_directory,
                     progress,
                 )
-                progress.update("Mosaicos GeoTIFF", "Pronto", f"{len(mosaics)} mosaico(s)")
-                progress.update("Conversao IDRISI", "Pronto", f"{len(converted)} raster(s)")
+                progress.update("GeoTIFF mosaics", "Ready", f"{len(mosaics)} mosaic(s)")
+                progress.update("IDRISI conversion", "Ready", f"{len(converted)} raster(s)")
                 _log_folder_summary("GeoTIFF mosaics validated", geotiff_directory, ("*.tif", "*.tiff"))
                 LOGGER.info(
                     "Prepared %d local GeoTIFF mosaics in %s and converted %d rasters to IDRISI.",
@@ -514,10 +514,10 @@ def main() -> None:
                 missing_products = _missing_expected_rasters(mosaics, project_settings.scenarios)
             if not local_tiles or missing_products:
                 if not local_tiles:
-                    progress.update("Sync rasters", "Sem tiles", "Submetendo exports raster")
+                    progress.update("Sync rasters", "No tiles", "Submitting raster exports")
                     LOGGER.info("Sync rasters: no tiles found in Drive. Submitting Earth Engine raster exports.")
                 else:
-                    progress.update("Sync rasters", "Faltando", f"{len(missing_products)} produto(s)")
+                    progress.update("Sync rasters", "Missing", f"{len(missing_products)} product(s)")
                     LOGGER.info(
                         "Sync rasters: %d expected raster product(s) still missing after Drive sync (%s). "
                         "Submitting Earth Engine raster exports.",
@@ -526,7 +526,7 @@ def main() -> None:
                     )
                 ensure_drive_raster_folder(drive_service, raw_settings)
                 initialize_earth_engine(raw_settings["earth_engine"]["project"], credentials=credentials)
-                progress.update("Earth Engine", "Inicializado", "Preparando rasters faltantes")
+                progress.update("Earth Engine", "Initialized", "Preparing missing rasters")
                 if prepared_inputs is None:
                     prepared_inputs = prepare_input_data(raw_settings)
                 if organized_data is None:
@@ -551,14 +551,14 @@ def main() -> None:
                     products=products_to_submit,
                     area_of_interest=prepared_inputs.area_of_interest,
                 )
-                progress.update("Earth Engine", "Na fila", f"{len(tasks)} raster export task(s)")
+                progress.update("Earth Engine", "Queued", f"{len(tasks)} raster export task(s)")
                 LOGGER.info(
                     "Submitted %d raster export tasks. Re-run once Earth Engine completes to download and convert to IDRISI.",
                     len(tasks),
                 )
 
         initialize_earth_engine(raw_settings["earth_engine"]["project"], credentials=credentials)
-        progress.update("Earth Engine", "Inicializado", "Atualizando tabela de status")
+        progress.update("Earth Engine", "Initialized", "Updating the raster status table")
         if prepared_inputs is None:
             prepared_inputs = prepare_input_data(raw_settings)
         if organized_data is None:
@@ -572,10 +572,10 @@ def main() -> None:
             products = build_raster_products(raw_settings, project_settings.scenarios, prepared_inputs, organized_data)
         status_table = build_raster_status_table(products, geotiff_directory, idrisi_directory, raster_root)
         print_raster_status_table(status_table)
-        progress.update("Sync rasters", "Status", f"{len(status_table)} produto(s) na tabela de rasters")
+        progress.update("Sync rasters", "Status", f"{len(status_table)} product(s) in the raster status table")
 
     if args.analyze:
-        progress.update("Analise local", "Rodando", "Computando tabelas finais")
+        progress.update("Local analysis", "Running", "Computing final tables")
         LOGGER.info("3. Data analysis: computing final tables")
         assert_gate(required_csv_gate(audit))
         if _local_geotiffs(geotiff_directory):
@@ -594,7 +594,7 @@ def main() -> None:
                 idrisi_directory,
                 progress,
             )
-            progress.update("Conversao IDRISI", "Pronto", f"{len(converted)} raster(s) convertidos agora")
+            progress.update("IDRISI conversion", "Ready", f"{len(converted)} raster(s) converted during this run")
             if converted:
                 LOGGER.info("Converted %d GeoTIFF(s) to IDRISI format in %s.", len(converted), idrisi_directory)
         results = analyze_exported_tables(
@@ -606,7 +606,7 @@ def main() -> None:
         )
         _log_folder_summary("CSV tables available", table_directory, ("*.csv",))
         LOGGER.info("4. Results and output generation")
-        progress.update("Relatorios", "Gerando", "Resultados, figuras e tabelas")
+        progress.update("Reports", "Generating", "Results, figures, and tables")
         written: WorkflowOutputs = write_results(results, project_settings)
         written["mapbiomas_verra_validation"] = verra_validation_path
         workbook_path = publish_table_workbook(
@@ -678,8 +678,8 @@ def main() -> None:
             or project_settings.output_directories["reports"] / "technical_report.md"
         )
         if args.skip_google_report:
-            progress.update("Analise local", "Pronto", "Analise finalizada")
-            progress.update("Relatorios", "Pronto", str(technical_report_path))
+            progress.update("Local analysis", "Ready", "Analysis completed")
+            progress.update("Reports", "Ready", str(technical_report_path))
             LOGGER.info("Skipped Google Docs report update. Local report: %s", technical_report_path)
             LOGGER.info("Wrote %d output file groups.", len(written))
             LOGGER.info("Workflow complete.")
@@ -706,8 +706,8 @@ def main() -> None:
         LOGGER.info("Google Docs report: https://docs.google.com/document/d/%s/edit", document_id)
         LOGGER.info("Google Slides presentation: https://docs.google.com/presentation/d/%s/edit", presentation_id)
         LOGGER.info("Wrote %d output file groups.", len(written))
-        progress.update("Analise local", "Pronto", "Analise finalizada")
-        progress.update("Relatorios", "Pronto", "Docs, Word, Excel e Slides atualizados")
+        progress.update("Local analysis", "Ready", "Analysis completed")
+        progress.update("Reports", "Ready", "Docs, Word, Excel, and Slides updated")
 
     LOGGER.info("Workflow complete.")
 

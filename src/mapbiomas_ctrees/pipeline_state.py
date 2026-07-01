@@ -78,7 +78,7 @@ def audit_pipeline_state(
 
     for spec in expected_csvs:
         path = _find_single_artifact(table_directory, spec.name, ".csv", issues)
-        stage = _csv_artifact_state(path, missing_detail="CSV ausente")
+        stage = _csv_artifact_state(path, missing_detail="Missing CSV")
         products[spec.name] = ProductState(
             name=spec.name,
             kind=spec.kind,
@@ -95,11 +95,11 @@ def audit_pipeline_state(
         rdc_path = idrisi_directory / f"{spec.name}.rdc"
         pal_path = idrisi_directory / f"{spec.name}.pal"
         stages = {
-            "download": _multi_artifact_state(tile_paths, missing_detail="GeoTIFF tile ausente"),
-            "mosaic": _artifact_state(mosaic_path if mosaic_path.exists() else None, missing_detail="Mosaico ausente"),
-            "idrisi_rst": _artifact_state(rst_path if rst_path.exists() else None, missing_detail="IDRISI .rst ausente"),
-            "idrisi_rdc": _artifact_state(rdc_path if rdc_path.exists() else None, missing_detail="IDRISI .rdc ausente"),
-            "idrisi_pal": _artifact_state(pal_path if pal_path.exists() else None, missing_detail="IDRISI .pal ausente"),
+            "download": _multi_artifact_state(tile_paths, missing_detail="Missing GeoTIFF tile"),
+            "mosaic": _artifact_state(mosaic_path if mosaic_path.exists() else None, missing_detail="Missing mosaic"),
+            "idrisi_rst": _artifact_state(rst_path if rst_path.exists() else None, missing_detail="Missing IDRISI .rst"),
+            "idrisi_rdc": _artifact_state(rdc_path if rdc_path.exists() else None, missing_detail="Missing IDRISI .rdc"),
+            "idrisi_pal": _artifact_state(pal_path if pal_path.exists() else None, missing_detail="Missing IDRISI .pal"),
         }
         products[spec.name] = ProductState(
             name=spec.name,
@@ -154,24 +154,24 @@ def write_pipeline_audit_markdown(audit: PipelineAudit, path: Path) -> Path:
         key=lambda item: (item.kind, item.name),
     )
     lines = [
-        "# Auditoria do pipeline",
+        "# Pipeline Audit",
         "",
-        f"Gerado em: {audit.generated_at}",
+        f"Generated at: {audit.generated_at}",
         "",
-        "| Metrica | Valor |",
+        "| Metric | Value |",
         "|---|---:|",
     ]
     for key, value in sorted(audit.summary.items()):
         lines.append(f"| {key} | {value} |")
     if audit.issues:
-        lines.extend(["", "## Problemas", ""])
+        lines.extend(["", "## Issues", ""])
         lines.extend(f"- {issue}" for issue in audit.issues)
     lines.extend(
         [
             "",
-            "## Produtos obrigatorios",
+            "## Required Products",
             "",
-            "| Produto | Tipo | Status | Etapas |",
+            "| Product | Type | Status | Stages |",
             "|---|---|---:|---|",
         ]
     )
@@ -184,9 +184,9 @@ def write_pipeline_audit_markdown(audit: PipelineAudit, path: Path) -> Path:
         lines.extend(
             [
                 "",
-                "## Produtos opcionais pendentes",
+                "## Pending Optional Products",
                 "",
-                "| Produto | Tipo | Status | Etapas |",
+                "| Product | Type | Status | Stages |",
                 "|---|---|---:|---|",
             ]
         )
@@ -196,21 +196,21 @@ def write_pipeline_audit_markdown(audit: PipelineAudit, path: Path) -> Path:
                 f"{_cell(_stage_summary(product.stages))} |"
             )
         if len(optional_pending) > 100:
-            lines.append(f"| ... | ... | ... | {len(optional_pending) - 100} produto(s) omitido(s) |")
+            lines.append(f"| ... | ... | ... | {len(optional_pending) - 100} product(s) omitted |")
     if observed:
         lines.extend(
             [
                 "",
-                "## Artefatos observados fora do catalogo",
+                "## Observed Artifacts Outside the Catalog",
                 "",
-                "| Produto | Tipo | Etapas |",
+                "| Product | Type | Stages |",
                 "|---|---|---|",
             ]
         )
         for product in observed[:100]:
             lines.append(f"| {_cell(product.name)} | {_cell(product.kind)} | {_cell(_stage_summary(product.stages))} |")
         if len(observed) > 100:
-            lines.append(f"| ... | ... | {len(observed) - 100} artefato(s) omitido(s); veja pipeline_state.json |")
+            lines.append(f"| ... | ... | {len(observed) - 100} artifact(s) omitted; see pipeline_state.json |")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
 
@@ -218,7 +218,7 @@ def write_pipeline_audit_markdown(audit: PipelineAudit, path: Path) -> Path:
 def _find_single_artifact(directory: Path, stem: str, suffix: str, issues: list[str]) -> Path | None:
     matches = sorted(directory.glob(f"{stem}*{suffix}")) if directory.exists() else []
     if len(matches) > 1:
-        issues.append(f"Artefato ambiguo para {stem}: {len(matches)} arquivo(s) em {directory}")
+        issues.append(f"Ambiguous artifact for {stem}: {len(matches)} file(s) in {directory}")
     return matches[0] if matches else None
 
 
@@ -244,7 +244,7 @@ def _artifact_state(path: Path | None, *, missing_detail: str) -> ArtifactState:
             path=str(path),
             size_bytes=stat.st_size,
             modified_at=_mtime(path),
-            detail="arquivo vazio",
+            detail="empty file",
         )
     return ArtifactState(status="ready", path=str(path), size_bytes=stat.st_size, modified_at=_mtime(path))
 
@@ -259,11 +259,11 @@ def _csv_artifact_state(path: Path | None, *, missing_detail: str) -> ArtifactSt
             header = next(reader, None)
     except (OSError, UnicodeDecodeError, csv.Error) as exc:
         state.status = "invalid"
-        state.detail = f"CSV ilegivel: {exc}"
+        state.detail = f"Unreadable CSV: {exc}"
         return state
     if not header or not any(str(column).strip() for column in header):
         state.status = "invalid"
-        state.detail = "CSV sem cabecalho"
+        state.detail = "CSV without a header"
     return state
 
 
@@ -272,9 +272,9 @@ def _multi_artifact_state(paths: list[Path], *, missing_detail: str) -> Artifact
         return ArtifactState(status="missing", detail=missing_detail)
     total_size = sum(path.stat().st_size for path in paths)
     status = "invalid" if total_size <= 0 else "ready"
-    detail = f"{len(paths)} arquivo(s)"
+    detail = f"{len(paths)} file(s)"
     if status == "invalid":
-        detail = f"{detail}; tamanho total zero"
+        detail = f"{detail}; zero total size"
     newest = max(paths, key=lambda path: path.stat().st_mtime)
     return ArtifactState(
         status=status,
@@ -308,7 +308,7 @@ def _add_observed_csvs(products: dict[str, ProductState], table_directory: Path)
             name=path.stem,
             kind="csv",
             required=False,
-            description="CSV observado fora do catalogo inicial",
+            description="CSV observed outside the initial catalog",
             status="observed",
             stages={"csv": _csv_artifact_state(path, missing_detail="")},
         )
@@ -342,7 +342,7 @@ def _add_observed_rasters(
                     name=path.stem,
                     kind="raster",
                     required=False,
-                    description="Raster observado fora do catalogo inicial",
+                    description="Raster observed outside the initial catalog",
                     status="observed",
                     stages={},
                 ),
@@ -358,7 +358,7 @@ def _add_residual_file_issues(issues: list[str], *directories: Path) -> None:
             continue
         for path in sorted(directory.iterdir()):
             if path.is_file() and path.name.lower().endswith((".download", ".tmp")):
-                issues.append(f"Arquivo temporario residual: {path} ({path.stat().st_size} bytes)")
+                issues.append(f"Residual temporary file: {path} ({path.stat().st_size} bytes)")
 
 
 def _add_invalid_artifact_issues(issues: list[str], products: dict[str, ProductState]) -> None:
@@ -366,9 +366,9 @@ def _add_invalid_artifact_issues(issues: list[str], products: dict[str, ProductS
         for stage_name, state in product.stages.items():
             if state.status != "invalid":
                 continue
-            location = f" em {state.path}" if state.path else ""
+            location = f" in {state.path}" if state.path else ""
             detail = f": {state.detail}" if state.detail else ""
-            issues.append(f"Artefato invalido: {product.name} [{stage_name}]{location}{detail}")
+            issues.append(f"Invalid artifact: {product.name} [{stage_name}]{location}{detail}")
 
 
 def _summarize(products: dict[str, ProductState]) -> dict[str, int]:

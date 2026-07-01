@@ -562,31 +562,31 @@ def build_raster_status_table(
                 history_changed = True
 
         if idrisi_present:
-            status, detail = "IDRISI pronto", ""
+            status, detail = "IDRISI ready", ""
         elif geotiff_present:
-            status, detail = "GeoTIFF baixado", "falta converter para IDRISI"
+            status, detail = "GeoTIFF downloaded", "IDRISI conversion pending"
         elif task is not None and str(task.get("state")) in {"READY", "RUNNING"}:
             state = str(task.get("state"))
             created_ms = task.get("creation_timestamp_ms")
             elapsed_seconds = (now_ms - float(created_ms)) / 1000.0 if created_ms else None
             average_seconds = _average_export_duration(history, category)
-            status = "Earth Engine: rodando" if state == "RUNNING" else "Earth Engine: na fila"
+            status = "Earth Engine: running" if state == "RUNNING" else "Earth Engine: queued"
             if elapsed_seconds is None:
-                detail = "sem informacao de tempo"
+                detail = "no timing information"
             elif average_seconds is not None:
                 remaining = max(average_seconds - elapsed_seconds, 0.0)
                 detail = (
-                    f"decorrido {_format_duration(elapsed_seconds)}, "
+                    f"elapsed {_format_duration(elapsed_seconds)}, "
                     f"ETA ~{_format_duration(remaining)}"
                 )
             else:
-                detail = f"decorrido {_format_duration(elapsed_seconds)}, ETA desconhecida (sem historico)"
+                detail = f"elapsed {_format_duration(elapsed_seconds)}, ETA unknown (no history)"
         elif task is not None and str(task.get("state")) in {"FAILED", "CANCELLED"}:
             status, detail = f"Earth Engine: {task.get('state')}", str(task.get("error_message", ""))
         else:
-            status, detail = "Nao submetido", ""
+            status, detail = "Not submitted", ""
 
-        rows.append({"produto": name, "status": status, "detalhe": detail})
+        rows.append({"product": name, "status": status, "detail": detail})
 
     if history_changed:
         history["recorded_task_ids"] = sorted(recorded_ids)[-500:]
@@ -596,11 +596,13 @@ def build_raster_status_table(
 
 
 def print_raster_status_table(table: pd.DataFrame) -> None:
-    """Log the raster status table as a single readable block."""
+    """Log a concise raster status summary, with the full table in verbose logs."""
     if table.empty:
         LOGGER.info("No raster products to report status for.")
         return
-    LOGGER.info("Raster export status (%d product(s)):\n%s", len(table), table.to_string(index=False))
+    counts = table["status"].value_counts().to_dict()
+    LOGGER.info("Raster export status: %d product(s); %s", len(table), counts)
+    LOGGER.debug("Raster export status table:\n%s", table.to_string(index=False))
 
 
 def convert_geotiffs_to_idrisi(geotiff_directory: Path, idrisi_directory: Path) -> list[Path]:
@@ -644,7 +646,9 @@ def build_geotiff_mosaics(geotiff_directory: Path, mosaic_directory: Path) -> li
         else:
             _write_geotiff_mosaic(paths, output_path)
         mosaics.append(output_path)
-        LOGGER.info("Prepared GeoTIFF mosaic %s from %d source file(s).", output_path.name, len(paths))
+        LOGGER.debug("Prepared GeoTIFF mosaic %s from %d source file(s).", output_path.name, len(paths))
+    if mosaics:
+        LOGGER.info("Prepared %d GeoTIFF mosaic(s).", len(mosaics))
     return mosaics
 
 
