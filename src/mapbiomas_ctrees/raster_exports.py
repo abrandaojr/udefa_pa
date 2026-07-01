@@ -632,24 +632,46 @@ def convert_geotiffs_to_idrisi(geotiff_directory: Path, idrisi_directory: Path) 
 
 
 def build_geotiff_mosaics(geotiff_directory: Path, mosaic_directory: Path) -> list[Path]:
-    """Create one LZW-compressed GeoTIFF mosaic per exported raster product."""
+    """Create missing or stale LZW-compressed GeoTIFF mosaics per exported raster product."""
     mosaic_directory.mkdir(parents=True, exist_ok=True)
     groups: dict[str, list[Path]] = {}
     for path in _iter_geotiff_files(geotiff_directory):
         groups.setdefault(_geotiff_product_stem(path), []).append(path)
 
     mosaics: list[Path] = []
+    created = 0
+    skipped = 0
     for product_stem, paths in sorted(groups.items()):
         output_path = mosaic_directory / f"{product_stem}.tif"
+        if _mosaic_is_current(output_path, paths):
+            mosaics.append(output_path)
+            skipped += 1
+            LOGGER.debug("Skipping current GeoTIFF mosaic: %s", output_path.name)
+            continue
         if len(paths) == 1 and paths[0].stem == product_stem:
             _copy_geotiff_lzw(paths[0], output_path)
         else:
             _write_geotiff_mosaic(paths, output_path)
         mosaics.append(output_path)
+        created += 1
         LOGGER.debug("Prepared GeoTIFF mosaic %s from %d source file(s).", output_path.name, len(paths))
     if mosaics:
-        LOGGER.info("Prepared %d GeoTIFF mosaic(s).", len(mosaics))
+        LOGGER.info(
+            "GeoTIFF mosaics available: %d total, %d created or refreshed, %d reused.",
+            len(mosaics),
+            created,
+            skipped,
+        )
     return mosaics
+
+
+def _mosaic_is_current(output_path: Path, source_paths: list[Path]) -> bool:
+    if not output_path.exists() or output_path.stat().st_size <= 0:
+        return False
+    if not source_paths:
+        return True
+    newest_source = max(path.stat().st_mtime for path in source_paths)
+    return output_path.stat().st_mtime >= newest_source
 
 
 def validate_common_grid(

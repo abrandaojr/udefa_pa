@@ -14,7 +14,7 @@ from src.mapbiomas_ctrees.data_quality import required_csv_gate, required_raster
 from src.mapbiomas_ctrees.google_services import _local_download_is_current
 from src.mapbiomas_ctrees.local_tables import _first_match
 from src.mapbiomas_ctrees.pipeline_state import audit_pipeline_state
-from src.mapbiomas_ctrees.raster_exports import convert_geotiffs_to_idrisi
+from src.mapbiomas_ctrees.raster_exports import build_geotiff_mosaics, convert_geotiffs_to_idrisi
 from src.mapbiomas_ctrees.settings import Scenario
 
 
@@ -187,6 +187,37 @@ class PipelineQualityTests(unittest.TestCase):
             second = convert_geotiffs_to_idrisi(geotiff_dir, idrisi_dir)
             self.assertEqual(second, [])
             self.assertEqual(rst.stat().st_mtime, first_mtime)
+
+    def test_geotiff_mosaic_build_is_incremental(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tile_dir = root / "tiles"
+            mosaic_dir = root / "geotiff"
+            tile_dir.mkdir()
+            path = tile_dir / "Tiny_Test-00000-00000.tif"
+            data = np.array([[1, 2], [3, 4]], dtype=np.int16)
+            with rasterio.open(
+                path,
+                "w",
+                driver="GTiff",
+                height=2,
+                width=2,
+                count=1,
+                dtype="int16",
+                crs="EPSG:5880",
+                transform=from_origin(0, 60, 30, 30),
+                nodata=-9999,
+            ) as dataset:
+                dataset.write(data, 1)
+
+            first = build_geotiff_mosaics(tile_dir, mosaic_dir)
+            self.assertEqual([path.name for path in first], ["Tiny_Test.tif"])
+            mosaic = mosaic_dir / "Tiny_Test.tif"
+            first_mtime = mosaic.stat().st_mtime
+            time.sleep(0.01)
+            second = build_geotiff_mosaics(tile_dir, mosaic_dir)
+            self.assertEqual([path.name for path in second], ["Tiny_Test.tif"])
+            self.assertEqual(mosaic.stat().st_mtime, first_mtime)
 
     def test_download_manifest_backfill_rejects_local_file_older_than_drive(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

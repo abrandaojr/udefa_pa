@@ -408,8 +408,7 @@ def main() -> None:
             geotiff_tile_directory,
             lambda status, detail: progress.update("Download raster", status, detail),
         )
-        progress.update("GeoTIFF mosaics", "Generating", "Rebuilding mosaics")
-        _clear_generated_geotiffs(geotiff_directory)
+        progress.update("GeoTIFF mosaics", "Generating", "Building missing or stale mosaics")
         mosaics = build_geotiff_mosaics(geotiff_tile_directory, geotiff_directory)
         progress.update("IDRISI conversion", "Converting", f"{len(mosaics)} mosaic(s)")
         converted = convert_geotiffs_to_idrisi(geotiff_directory, idrisi_directory)
@@ -484,8 +483,7 @@ def main() -> None:
             local_tiles = _local_geotiffs(geotiff_tile_directory)
             if local_tiles:
                 progress.update("GeoTIFF mosaics", "Generating", f"{len(local_tiles)} tile(s)")
-                LOGGER.info("Sync rasters: %d tile(s) found. Building mosaics.", len(local_tiles))
-                _clear_generated_geotiffs(geotiff_directory)
+                LOGGER.info("Sync rasters: %d tile(s) found. Building missing or stale mosaics.", len(local_tiles))
                 mosaics = build_geotiff_mosaics(geotiff_tile_directory, geotiff_directory)
                 progress.update("IDRISI conversion", "Converting", f"{len(mosaics)} mosaic(s)")
                 converted = convert_geotiffs_to_idrisi(geotiff_directory, idrisi_directory)
@@ -730,17 +728,6 @@ def _missing_expected_rasters(local_mosaics: list[Path], scenarios: list) -> lis
         if not any(marker in stem for stem in stems):
             missing.append(f"Persistence scenario {scenario.label}")
     return missing
-
-
-def _clear_generated_geotiffs(directory: Path) -> None:
-    resolved = directory.resolve()
-    if resolved.name != "geotiff" or resolved.parent.name != "rasters":
-        raise RuntimeError(f"Refusing to clear unexpected GeoTIFF directory: {resolved}")
-    directory.mkdir(parents=True, exist_ok=True)
-    for pattern in ("*.tif", "*.tiff", "*.tif.tmp", "*.tiff.tmp", "*.tif.aux.xml", "*.tiff.aux.xml"):
-        for path in directory.glob(pattern):
-            if path.is_file():
-                path.unlink()
 
 
 def _refresh_pipeline_audit(
