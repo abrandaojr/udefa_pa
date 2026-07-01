@@ -1,0 +1,15 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "executionEnvironments": [
+    {
+      "root": ".",
+      "pythonVersion": "3.14",
+      "extraPaths": [
+        ".",
+        ".venv/Lib/site-packages",
+        "spatial-viz-toolkit"
+      ]
+    }
+  ]
+}

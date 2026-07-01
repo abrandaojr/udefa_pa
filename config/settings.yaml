@@ -1,0 +1,244 @@
+project:
+  name: mapbiomas_ctrees_para
+  description: Technical comparison of MapBiomas forest persistence and CTrees reference
+    products for Para, Brazil.
+earth_engine:
+  project: ee-abrandaojr
+  output_crs: EPSG:5880
+  aoi:
+    states_feature_collection: users/abrandaojr/BR_geometries/BR_States_2015
+    state_property: CD_GEOCUF
+    state_code: '15'
+    state_name: Para
+  mapbiomas_image: projects/mapbiomas-public/assets/brazil/lulc/collection10_1/mapbiomas_brazil_collection10_1_coverage_v1
+  scale_native_m: 30
+  max_pixels: 10000000000000
+grid:
+  crs: EPSG:5880
+  scale_m: 30
+  anchor_asset: projects/ee-abrandaojr/assets/Brazil_Para_FCBM1_YEAR_2009
+  boundary_asset: projects/ee-abrandaojr/assets/Brazil_Para_DMJSS
+  include_10km_buffer: true
+  resampling_method: nearestNeighbor
+  max_pixels: 10000000000000
+analysis:
+  years:
+    start: 1985
+    end: 2024
+  spatial_units:
+    provider: IBGE municipalities
+    asset: users/abrandaojr/BR_geometries/BR_Municipalities_2015
+    id_property: CD_GEOCMU
+    name_property: NM_MUNICIP
+  forest_codes:
+  - 1
+  - 3
+  - 4
+  excluded_mapbiomas_codes:
+  - 5
+  - 6
+  - 9
+  - 11
+  - 14
+  - 18
+  - 19
+  - 20
+  - 21
+  - 24
+  - 26
+  - 27
+  - 30
+  - 31
+  - 33
+  - 35
+  - 36
+  - 37
+  - 38
+  - 39
+  - 40
+  - 41
+  - 46
+  - 47
+  - 48
+  - 62
+  scenarios:
+  - id: A
+    threshold_percent: 100
+    start_year: 1985
+    end_year: 2024
+  - id: B
+    threshold_percent: 95
+    start_year: 1985
+    end_year: 2024
+  - id: C
+    threshold_percent: 50
+    start_year: 1985
+    end_year: 2024
+  - id: D
+    threshold_percent: 100
+    start_year: 2015
+    end_year: 2024
+  - id: E
+    threshold_percent: 100
+    start_year: 2013
+    end_year: 2024
+  - id: F
+    threshold_percent: 100
+    start_year: 2018
+    end_year: 2024
+references:
+  FCBM4:
+    asset: projects/ee-abrandaojr/assets/para_ctres_fcbm_4class
+    label: FCBM4
+    class_codes:
+    - 0
+    - 1
+    - 2
+    - 3
+    - 4
+    class_labels:
+      0: No Data
+      1: Stable Non-Forest
+      2: Stable Forest
+      3: Deforested in first half of HRP
+      4: Deforested in second half of HRP
+    groups:
+      forest:
+      - Stable Forest
+      nonforest:
+      - Stable Non-Forest
+      change:
+      - Deforested in first half of HRP
+      - Deforested in second half of HRP
+      excluded:
+      - No Data
+  FCBM3_2018:
+    asset: projects/ee-abrandaojr/assets/Brazil_Para_FCBM3_YEAR_2018
+    label: FCBM3 2018
+    remap:
+      from:
+      - 1
+      to:
+      - 1
+      default: 0
+    class_codes:
+    - 0
+    - 1
+    class_labels:
+      0: Non-Forest
+      1: Forest
+    groups:
+      forest:
+      - Forest
+      nonforest:
+      - Non-Forest
+      change: []
+      excluded: []
+  FCBM2_2013:
+    asset: projects/ee-abrandaojr/assets/Brazil_Para_FCBM2_YEAR_2013
+    label: FCBM2 2013
+    remap:
+      from:
+      - 1
+      to:
+      - 1
+      default: 0
+    class_codes:
+    - 0
+    - 1
+    class_labels:
+      0: Non-Forest
+      1: Forest
+    groups:
+      forest:
+      - Forest
+      nonforest:
+      - Non-Forest
+      change: []
+      excluded: []
+  FCBM1_2009:
+    asset: projects/ee-abrandaojr/assets/Brazil_Para_FCBM1_YEAR_2009
+    label: FCBM1 2009
+    remap:
+      from:
+      - 1
+      to:
+      - 1
+      default: 0
+    class_codes:
+    - 0
+    - 1
+    class_labels:
+      0: Non-Forest
+      1: Forest
+    groups:
+      forest:
+      - Forest
+      nonforest:
+      - Non-Forest
+      change: []
+      excluded: []
+  DMJSS:
+    asset: projects/ee-abrandaojr/assets/Brazil_Para_DMJSS
+    label: DMJSS
+    class_codes:
+    - 0
+    - 1
+    - 2
+    - 3
+    - 4
+    class_labels:
+      0: Stable Non-Forest
+      1: Stable Forest
+      2: Deforestation
+      3: Regrowth
+      4: Buffer
+    groups:
+      forest:
+      - Stable Forest
+      nonforest:
+      - Stable Non-Forest
+      change:
+      - Deforestation
+      - Regrowth
+      excluded:
+      - Buffer
+udef_a:
+  ctrees_fcbm_asset: ''
+  ctrees_fcbm_reference: FCBM4
+  ctrees_snapshot_references:
+    t1: FCBM1_2009
+    t2: FCBM2_2013
+    t3: FCBM3_2018
+  hrp_years:
+    t1: 2009
+    t2: 2013
+    t3: 2018
+outputs:
+  root: outputs
+  directories:
+    tables: tables
+    figures: figures
+    reports: reports
+    logs: logs
+google:
+  scopes:
+  - https://www.googleapis.com/auth/cloud-platform
+  - https://www.googleapis.com/auth/earthengine
+  - https://www.googleapis.com/auth/drive
+  - https://www.googleapis.com/auth/documents
+  - https://www.googleapis.com/auth/spreadsheets
+  credentials_token: .google_auth/token.json
+  oauth_client_file: .google_auth/client_secret.json
+  report_document_title: MapBiomas CTrees Para Technical Report
+  report_document_id: 1phwvVXcsKThclu93adIAVSMVQX56EttKcmrXM3Du-PI
+  tables_spreadsheet_title: MapBiomas CTrees Para Tables
+  tables_spreadsheet_id: 14ieRHwo8NA5V_BI8mLnHFAqA9nh5lGpmYfgBfCFLg-Y
+  presentation_title: MapBiomas CTrees Para Technical Presentation
+  presentation_id: 1SyrpmgUJXNgCx5DV5guvpGc-shP_Vh9fpDXmxTGf_1I
+  drive_folder_name: MapBiomas_Persistence_Para
+  drive_folder_id: 1DVKeU5w__gAi0Uak-WbAQ8n_pSpJf-xI
+  drive_subfolders:
+    exports: 01_gee_exports
+    rasters: 02_raster_exports
+    report_assets: 06_report_assets
