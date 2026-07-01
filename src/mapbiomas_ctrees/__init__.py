@@ -1,4 +1,4 @@
-"""Sequential analysis workflow for MapBiomas and CTrees data."""
+"""UDefA Para analysis workflow built from MapBiomas and CTrees references."""
 
 __all__ = [
     "settings",

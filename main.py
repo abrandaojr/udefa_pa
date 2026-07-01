@@ -103,7 +103,7 @@ def _log_folder_summary(label: str, directory: Path, patterns: tuple[str, ...]) 
 def parse_arguments() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="Run the MapBiomas and CTrees technical analysis workflow."
+        description="Run the UDefA Para analysis pipeline."
     )
     parser.add_argument("--config", default="config/settings.yaml", help="Path to the YAML settings file.")
     parser.add_argument("--output-root", default=None, help="Optional output directory override.")

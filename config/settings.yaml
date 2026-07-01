@@ -1,7 +1,7 @@
 project:
-  name: mapbiomas_ctrees_para
-  description: Technical comparison of MapBiomas forest persistence and CTrees reference
-    products for Para, Brazil.
+  name: udefa_pa
+  description: UDefA Para pipeline for MapBiomas persistence scenarios, CTrees reference
+    products, raster synchronization, local metrics, and publication outputs.
 earth_engine:
   project: ee-abrandaojr
   output_crs: EPSG:5880
@@ -230,11 +230,11 @@ google:
   - https://www.googleapis.com/auth/spreadsheets
   credentials_token: .google_auth/token.json
   oauth_client_file: .google_auth/client_secret.json
-  report_document_title: MapBiomas CTrees Para Technical Report
+  report_document_title: UDefA Para Technical Report
   report_document_id: 1phwvVXcsKThclu93adIAVSMVQX56EttKcmrXM3Du-PI
-  tables_spreadsheet_title: MapBiomas CTrees Para Tables
+  tables_spreadsheet_title: UDefA Para Tables
   tables_spreadsheet_id: 14ieRHwo8NA5V_BI8mLnHFAqA9nh5lGpmYfgBfCFLg-Y
-  presentation_title: MapBiomas CTrees Para Technical Presentation
+  presentation_title: UDefA Para Technical Presentation
   presentation_id: 1SyrpmgUJXNgCx5DV5guvpGc-shP_Vh9fpDXmxTGf_1I
   drive_folder_name: MapBiomas_Persistence_Para
   drive_folder_id: 1DVKeU5w__gAi0Uak-WbAQ8n_pSpJf-xI

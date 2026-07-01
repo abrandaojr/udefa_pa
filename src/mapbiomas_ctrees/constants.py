@@ -1,4 +1,4 @@
-"""Class labels used in the MapBiomas and CTrees analysis."""
+"""Class labels used by the UDefA Para analysis pipeline."""
 
 PRIMARY_MAPBIOMAS_YEARS = [1985, 2009, 2013, 2018, 2024]
 CTREES_YEARS = [2009, 2013, 2018]

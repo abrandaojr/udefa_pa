@@ -1,6 +1,8 @@
 # UDefA Para Analysis Pipeline
 
-This repository contains the Python workflow used to prepare, audit, synchronize, and analyze UDefA-related MapBiomas and CTrees products for Para, Brazil.
+This repository contains the Python workflow used to prepare, audit, synchronize, and analyze UDefA Para products derived from MapBiomas and CTrees references.
+
+It is not a mirror of the upstream UDefA application. It is the execution repository for the Para analysis script: product catalog checks, Earth Engine export management, raster synchronization, IDRISI conversion, local metrics, and report/presentation publication.
 
 The script is focused on one reproducible pipeline:
 
@@ -11,6 +13,22 @@ The script is focused on one reproducible pipeline:
 5. generate tables, figures, a technical report, and presentation outputs.
 
 Generated outputs are intentionally not committed. The repository tracks source code, configuration, tests, and documentation only; rasters, reports, logs, OAuth tokens, and local data products are recreated by running the workflow.
+
+## Repository Scope
+
+Tracked in Git:
+
+- workflow source code and helper modules;
+- UDefA Para configuration;
+- pipeline audit and quality-gate tests;
+- documentation describing how to reproduce the run.
+
+Not tracked in Git:
+
+- Google OAuth credentials and local virtual environments;
+- Earth Engine exports downloaded from Drive;
+- GeoTIFF tiles, mosaics, IDRISI rasters, and raster inventories;
+- generated CSV/XLSX tables, figures, logs, Word reports, and PowerPoint decks.
 
 ## Directory Structure
 
@@ -42,7 +60,7 @@ Generated outputs are intentionally not committed. The repository tracks source 
         `-- settings.py
 ```
 
-## What The Script Does
+## What The Script Really Does
 
 - `main.py`: command-line orchestration and workflow gates.
 - `catalog.py` and `pipeline_state.py`: expected product inventory, local audit state, and progress reporting.

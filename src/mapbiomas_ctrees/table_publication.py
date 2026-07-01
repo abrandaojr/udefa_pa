@@ -95,7 +95,7 @@ def _ensure_tables_spreadsheet(sheets_service: Any, settings_path: Path, setting
     spreadsheet_id = str(settings["google"].get("tables_spreadsheet_id", "")).strip()
     if spreadsheet_id:
         return spreadsheet_id
-    title = str(settings["google"].get("tables_spreadsheet_title") or "MapBiomas CTrees Tables")
+    title = str(settings["google"].get("tables_spreadsheet_title") or "UDefA Para Tables")
     created = sheets_service.spreadsheets().create(body={"properties": {"title": title}}).execute()
     spreadsheet_id = str(created["spreadsheetId"])
     settings["google"]["tables_spreadsheet_id"] = spreadsheet_id
@@ -169,7 +169,7 @@ def _class_scheme_for_table(path: Path) -> str:
         return "Accuracy metrics derived from configured forest, non-forest, and change groups"
     if "reclassification" in name:
         return "MapBiomas forest/non-forest/excluded analytical reclassification"
-    return "Analytical table generated from MapBiomas and CTrees workflow outputs"
+    return "Analytical table generated from UDefA Para workflow outputs"
 
 
 def _verra_reference_for_table(path: Path) -> str:
