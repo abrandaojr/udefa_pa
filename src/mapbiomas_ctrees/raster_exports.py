@@ -106,7 +106,7 @@ def _geotiff_export_kwargs(product: RasterProduct, settings: dict[str, Any], fol
         raise RuntimeError("GeoTIFF export requires explicit grid.crs and grid.scale_m settings.")
 
     return {
-        "image": product.image.unmask(_IDRISI_NODATA).toInt16(),
+        "image": product.image.toInt16().unmask(_IDRISI_NODATA, False),
         "description": _with_projection_suffix(product.name, settings),
         "folder": folder,
         "fileNamePrefix": _with_projection_suffix(product.name, settings),
@@ -336,13 +336,14 @@ def build_raster_products(
     products.extend(_forest_to_nonforest_products(settings, prepared, organized))
     products.extend(_udef_a_fcbm_products(settings, prepared, organized))
     products.extend(_dmjss_mb_products(settings, prepared, organized))
-    return _normalize_raster_products(products, settings, organized.valid_analysis_mask)
+    return _normalize_raster_products(products, settings, organized.valid_analysis_mask, state_mask)
 
 
 def _normalize_raster_products(
     products: list[RasterProduct],
     settings: dict[str, Any],
     valid_mask: ee.Image | None = None,
+    state_mask: ee.Image | None = None,
 ) -> list[RasterProduct]:
     """Return raster products with one canonical EPSG/resolution suffix."""
     normalized: list[RasterProduct] = []
@@ -356,6 +357,8 @@ def _normalize_raster_products(
         image = product.image
         if valid_mask is not None and image is not None and _should_apply_valid_analysis_mask(name):
             image = image.updateMask(valid_mask)
+        if state_mask is not None and image is not None:
+            image = image.updateMask(state_mask)
         normalized.append(RasterProduct(name=name, image=image, description=product.description))
     return normalized
 
@@ -950,9 +953,6 @@ def _study_area_mask_geotiff(geotiff_directory: Path) -> Path | None:
         "UDefA_ParaStateMask*.tif",
         "*Para*State*Mask*.tif",
         "*State*Mask*.tif",
-        "UDefA_ValidMask*.tif",
-        "Valid_Analysis_Mask*.tif",
-        "*Valid*Mask*.tif",
     ):
         candidates.extend(sorted(geotiff_directory.glob(pattern)))
     for path in candidates:
@@ -967,9 +967,6 @@ def _study_area_mask_idrisi(idrisi_directory: Path) -> Path | None:
         "UDefA_ParaStateMask*.rst",
         "*Para*State*Mask*.rst",
         "*State*Mask*.rst",
-        "UDefA_ValidMask*.rst",
-        "Valid_Analysis_Mask*.rst",
-        "*Valid*Mask*.rst",
     ):
         candidates.extend(sorted(idrisi_directory.glob(pattern)))
     for path in candidates:
@@ -2074,7 +2071,7 @@ _IDRISI_BLOCK_ROWS = 2048
 _IDRISI_TARGET_CRS = CRS.from_epsg(5880)
 _IDRISI_TARGET_RESOLUTION_M = 30.0
 _IDRISI_NODATA = -9999
-_IDRISI_STUDY_AREA_MASK_LINEAGE = "lineage     : Outside study area set to missing data"
+_IDRISI_STUDY_AREA_MASK_LINEAGE = "lineage     : Outside Para state boundary set to missing data"
 
 
 def _needs_reproject(dataset: rasterio.DatasetReader) -> bool:

@@ -81,6 +81,37 @@ class PipelineQualityTests(unittest.TestCase):
 
         self.assertEqual([product.name for product in normalized], ["Tiny_Test_EPSG_5880_30m"])
 
+    def test_raster_normalization_masks_products_to_ibge_state_area(self) -> None:
+        class FakeImage:
+            def __init__(self) -> None:
+                self.masks: list[object] = []
+
+            def updateMask(self, mask: object) -> "FakeImage":
+                self.masks.append(mask)
+                return self
+
+        settings = {"grid": {"crs": "EPSG:5880", "scale_m": 30}, "earth_engine": {"scale_native_m": 30}}
+        product_image = FakeImage()
+        valid_image = FakeImage()
+        state_image = FakeImage()
+        valid_mask = object()
+        state_mask = object()
+
+        _normalize_raster_products(
+            [
+                RasterProduct("MapBiomas_ForestLoss_2009_2013", product_image, "loss"),  # type: ignore[arg-type]
+                RasterProduct("UDefA_ValidMask", valid_image, "valid"),  # type: ignore[arg-type]
+                RasterProduct("UDefA_ParaStateMask", state_image, "state"),  # type: ignore[arg-type]
+            ],
+            settings,
+            valid_mask=valid_mask,  # type: ignore[arg-type]
+            state_mask=state_mask,  # type: ignore[arg-type]
+        )
+
+        self.assertEqual(product_image.masks, [valid_mask, state_mask])
+        self.assertEqual(valid_image.masks, [state_mask])
+        self.assertEqual(state_image.masks, [state_mask])
+
     def test_drive_raster_download_filter_requires_target_suffix(self) -> None:
         settings = {"grid": {"crs": "EPSG:5880", "scale_m": 30}, "earth_engine": {"scale_native_m": 30}}
 
@@ -290,7 +321,7 @@ class PipelineQualityTests(unittest.TestCase):
             self.assertEqual(second, [])
             self.assertEqual(rst.stat().st_mtime, first_mtime)
 
-    def test_idrisi_conversion_masks_pixels_outside_study_area(self) -> None:
+    def test_idrisi_conversion_masks_pixels_outside_para_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             geotiff_dir = root / "geotiff"
@@ -298,10 +329,10 @@ class PipelineQualityTests(unittest.TestCase):
             geotiff_dir.mkdir()
             transform = from_origin(0, 60, 30, 30)
             raster_data = np.array([[1, 1], [0, 0]], dtype=np.int16)
-            valid_mask = np.array([[1, 0], [1, 0]], dtype=np.int16)
+            state_mask = np.array([[1, 0], [1, 0]], dtype=np.int16)
             for name, data in {
                 "Tiny_Test_EPSG_5880_30m": raster_data,
-                "Valid_Analysis_Mask_30m_EPSG_5880_30m": valid_mask,
+                "UDefA_ParaStateMask_EPSG_5880_30m": state_mask,
             }.items():
                 with rasterio.open(
                     geotiff_dir / f"{name}.tif",
@@ -322,7 +353,7 @@ class PipelineQualityTests(unittest.TestCase):
             values = np.fromfile(idrisi_dir / "Tiny_Test_EPSG_5880_30m.rst", dtype=np.int16).reshape(2, 2)
             self.assertTrue(np.array_equal(values, np.array([[1, _IDRISI_NODATA], [0, _IDRISI_NODATA]], dtype=np.int16)))
             rdc = (idrisi_dir / "Tiny_Test_EPSG_5880_30m.rdc").read_text(encoding="ascii")
-            self.assertIn("Outside study area set to missing data", rdc)
+            self.assertIn("Outside Para state boundary set to missing data", rdc)
 
     def test_idrisi_conversion_prioritizes_para_state_mask_over_valid_mask(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
