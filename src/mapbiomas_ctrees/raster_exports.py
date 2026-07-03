@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 import json
 import logging
@@ -1481,6 +1482,8 @@ _IDRISI_STABLE_FOREST_COLOR = "#006d2c"
 _IDRISI_NON_FOREST_COLOR = "#c7b37f"
 _IDRISI_STABLE_NON_FOREST_COLOR = "#d9c98f"
 _IDRISI_LOSS_COLOR = "#e31a1c"
+_IDRISI_FOREST_LOSS_BACKGROUND_COLOR = "#000000"
+_IDRISI_FOREST_LOSS_COLOR = "#ff0000"
 _IDRISI_LOSS_EARLY_COLOR = "#fdae61"
 _IDRISI_LOSS_LATE_COLOR = "#d7191c"
 _IDRISI_GAIN_COLOR = "#2c7fb8"
@@ -1492,6 +1495,7 @@ _IDRISI_MAPBIOMAS_ONLY_COLOR = "#ffcc33"
 _IDRISI_TEMPORAL_MIDPOINT_COLOR = "#756bb1"
 _IDRISI_TEMPORAL_CONTINUOUS_COLOR = "#084081"
 _IDRISI_DEFORESTED_REGROWTH_COLOR = "#b15928"
+_IDRISI_STUDY_AREA_BOUNDARY_COLOR = (255, 255, 255)
 
 
 _IDRISI_LEGENDS: dict[str, list[tuple[int, str, str]]] = {
@@ -1512,8 +1516,8 @@ _IDRISI_LEGENDS: dict[str, list[tuple[int, str, str]]] = {
         (4, "Buffer", _IDRISI_BUFFER_COLOR),
     ],
     "forest_loss": [
-        (0, "No Change", _IDRISI_NO_CHANGE_COLOR),
-        (1, "Forest to Non-Forest (Loss)", _IDRISI_LOSS_COLOR),
+        (0, "No Change", _IDRISI_FOREST_LOSS_BACKGROUND_COLOR),
+        (1, "Forest to Non-Forest (Loss)", _IDRISI_FOREST_LOSS_COLOR),
     ],
     "change4": [
         (0, "No Data", _IDRISI_NO_DATA_COLOR),
@@ -1819,6 +1823,89 @@ def _read_idrisi_color_table(stem_path: Path) -> np.ndarray | None:
     return None
 
 
+def _study_area_boundary(inside_mask: np.ndarray, close_radius: int = 0) -> np.ndarray:
+    inside = np.asarray(inside_mask, dtype=bool)
+    if inside.ndim != 2 or inside.size == 0:
+        return np.zeros_like(inside, dtype=bool)
+    if close_radius > 0 and min(inside.shape) > close_radius * 2:
+        inside = _erode_boolean_mask(_dilate_boolean_mask(inside, close_radius), close_radius)
+
+    outside = ~inside
+    exterior = np.zeros_like(outside, dtype=bool)
+    queue: deque[tuple[int, int]] = deque()
+    rows, columns = inside.shape
+
+    for row in range(rows):
+        for column in (0, columns - 1):
+            if outside[row, column] and not exterior[row, column]:
+                exterior[row, column] = True
+                queue.append((row, column))
+    for column in range(columns):
+        for row in (0, rows - 1):
+            if outside[row, column] and not exterior[row, column]:
+                exterior[row, column] = True
+                queue.append((row, column))
+
+    while queue:
+        row, column = queue.popleft()
+        for neighbor_row, neighbor_column in (
+            (row - 1, column),
+            (row + 1, column),
+            (row, column - 1),
+            (row, column + 1),
+        ):
+            if (
+                0 <= neighbor_row < rows
+                and 0 <= neighbor_column < columns
+                and outside[neighbor_row, neighbor_column]
+                and not exterior[neighbor_row, neighbor_column]
+            ):
+                exterior[neighbor_row, neighbor_column] = True
+                queue.append((neighbor_row, neighbor_column))
+
+    padded = np.pad(exterior, 1, mode="constant", constant_values=False)
+    return inside & (
+        padded[:-2, 1:-1]
+        | padded[2:, 1:-1]
+        | padded[1:-1, :-2]
+        | padded[1:-1, 2:]
+    )
+
+
+def _dilate_boolean_mask(mask: np.ndarray, radius: int = 1) -> np.ndarray:
+    source = np.asarray(mask, dtype=bool)
+    if source.ndim != 2 or source.size == 0 or radius <= 0:
+        return source.copy()
+
+    padded = np.pad(source, radius, mode="constant", constant_values=False)
+    dilated = np.zeros_like(source, dtype=bool)
+    size = radius * 2 + 1
+    for row_offset in range(size):
+        for col_offset in range(size):
+            dilated |= padded[
+                row_offset : row_offset + source.shape[0],
+                col_offset : col_offset + source.shape[1],
+            ]
+    return dilated
+
+
+def _erode_boolean_mask(mask: np.ndarray, radius: int = 1) -> np.ndarray:
+    source = np.asarray(mask, dtype=bool)
+    if source.ndim != 2 or source.size == 0 or radius <= 0:
+        return source.copy()
+
+    padded = np.pad(source, radius, mode="constant", constant_values=False)
+    eroded = np.ones_like(source, dtype=bool)
+    size = radius * 2 + 1
+    for row_offset in range(size):
+        for col_offset in range(size):
+            eroded &= padded[
+                row_offset : row_offset + source.shape[0],
+                col_offset : col_offset + source.shape[1],
+            ]
+    return eroded
+
+
 def _render_idrisi_thumbnail(
     rst_path: Path,
     metadata: dict[str, str],
@@ -1839,6 +1926,7 @@ def _render_idrisi_thumbnail(
     color_table = _read_idrisi_color_table(rst_path)
     flag_value = _idrisi_metadata_int(metadata, "flag value", _IDRISI_NODATA)
     valid_mask = sample != flag_value
+    study_boundary = None
     if study_area_mask_path is not None:
         study_metadata = _read_idrisi_rdc(study_area_mask_path.with_suffix(".rdc"))
         study_width = _idrisi_metadata_int(study_metadata, "columns")
@@ -1846,7 +1934,14 @@ def _render_idrisi_thumbnail(
         if study_width == width and study_height == height:
             study_raster = np.memmap(study_area_mask_path, dtype=np.int16, mode="r", shape=(height, width))
             study_sample = np.asarray(study_raster[::stride, ::stride])
-            valid_mask = valid_mask & (study_sample == 1)
+            study_inside = study_sample == 1
+            valid_mask = valid_mask & study_inside
+            if _idrisi_product_type(rst_path.stem) == "forest_loss":
+                close_radius = max(1, min(study_inside.shape) // 60)
+                study_boundary = _dilate_boolean_mask(
+                    _study_area_boundary(study_inside, close_radius=close_radius),
+                    radius=1,
+                )
 
     valid_sample = sample[valid_mask]
     if color_table is not None and valid_sample.size and valid_sample.min() >= 0 and valid_sample.max() <= 255:
@@ -1857,6 +1952,9 @@ def _render_idrisi_thumbnail(
         rgb[~valid_mask] = (0, 0, 0)
     else:
         rgb = _grayscale_thumbnail(sample, valid_mask, metadata)
+
+    if study_boundary is not None:
+        rgb[study_boundary] = _IDRISI_STUDY_AREA_BOUNDARY_COLOR
 
     image = Image.fromarray(rgb.astype(np.uint8), "RGB")
     image.thumbnail(thumbnail_size, Image.Resampling.NEAREST)

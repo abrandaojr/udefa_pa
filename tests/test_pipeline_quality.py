@@ -34,6 +34,7 @@ from src.mapbiomas_ctrees.raster_exports import (
     _idrisi_title,
     _idrisi_product_type,
     _normalize_raster_products,
+    _study_area_boundary,
     build_geotiff_mosaics,
     build_raster_status_table,
     convert_geotiffs_to_idrisi,
@@ -536,11 +537,51 @@ class PipelineQualityTests(unittest.TestCase):
         self.assertEqual(palette_lines[:5], ["0 0 0", "0 109 44", "217 201 143", "227 26 28", "44 127 184"])
         self.assertEqual(_IDRISI_LEGENDS["change4"][0], (0, "No Data", "#000000"))
 
-    def test_idrisi_forest_loss_palette_uses_neutral_no_change(self) -> None:
+    def test_idrisi_forest_loss_palette_uses_black_background_and_vivid_red_loss(self) -> None:
         palette_lines = _idrisi_pal_text(_IDRISI_LEGENDS["forest_loss"]).splitlines()
 
-        self.assertEqual(palette_lines[0], "255 255 255")
-        self.assertEqual(palette_lines[1], "227 26 28")
+        self.assertEqual(palette_lines[0], "0 0 0")
+        self.assertEqual(palette_lines[1], "255 0 0")
+
+    def test_study_area_boundary_marks_inside_edge(self) -> None:
+        inside = np.array(
+            [
+                [0, 0, 0, 0, 0],
+                [0, 1, 1, 1, 0],
+                [0, 1, 1, 1, 0],
+                [0, 1, 1, 1, 0],
+                [0, 0, 0, 0, 0],
+            ],
+            dtype=bool,
+        )
+
+        boundary = _study_area_boundary(inside)
+
+        self.assertTrue(boundary[1, 1])
+        self.assertTrue(boundary[1, 2])
+        self.assertTrue(boundary[3, 3])
+        self.assertFalse(boundary[2, 2])
+        self.assertFalse(boundary[0, 0])
+
+    def test_study_area_boundary_ignores_internal_holes(self) -> None:
+        inside = np.array(
+            [
+                [0, 0, 0, 0, 0, 0, 0],
+                [0, 1, 1, 1, 1, 1, 0],
+                [0, 1, 1, 1, 1, 1, 0],
+                [0, 1, 1, 0, 1, 1, 0],
+                [0, 1, 1, 1, 1, 1, 0],
+                [0, 1, 1, 1, 1, 1, 0],
+                [0, 0, 0, 0, 0, 0, 0],
+            ],
+            dtype=bool,
+        )
+
+        boundary = _study_area_boundary(inside)
+
+        self.assertTrue(boundary[1, 3])
+        self.assertFalse(boundary[3, 2])
+        self.assertFalse(boundary[3, 4])
 
     def test_idrisi_fcbm_table_palettes_use_semantic_colors(self) -> None:
         self.assertEqual(
