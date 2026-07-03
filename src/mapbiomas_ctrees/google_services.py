@@ -15,6 +15,8 @@ import httplib2
 import rasterio
 from google.auth.credentials import Credentials
 
+from .raster_naming import preferred_raster_product_stem, raster_product_stem, raster_semantic_key
+
 LOGGER = logging.getLogger(__name__)
 
 
@@ -294,13 +296,89 @@ def download_drive_raster_exports(
 ) -> list[Path]:
     """Download completed GeoTIFF raster exports from Google Drive."""
     target_directory.mkdir(parents=True, exist_ok=True)
+    drive_items = list_drive_raster_exports(drive_service, settings)
+
+    downloaded: list[Path] = []
+    preferred_stems = _preferred_drive_raster_stems(drive_items, settings, target_directory)
+    for item in drive_items:
+        name = str(item["name"])
+        target = target_directory / name
+        if not _raster_export_name_matches_target_grid(name, settings):
+            if target.exists():
+                _unlink_download_with_manifests(target)
+                LOGGER.warning("Removed local legacy raster export: %s", name)
+            LOGGER.info("Skipping redundant raster export outside target grid naming: %s", name)
+            continue
+        product_stem = raster_product_stem(name)
+        semantic_key = raster_semantic_key(product_stem)
+        preferred_stem = preferred_stems.get(semantic_key, product_stem)
+        if product_stem != preferred_stem:
+            if target.exists():
+                _unlink_download_with_manifests(target)
+                LOGGER.warning("Removed local duplicate raster export: %s", name)
+            LOGGER.info("Skipping duplicate raster export %s; preferred product is %s.", name, preferred_stem)
+            continue
+        if _rejected_download_matches(target, item):
+            LOGGER.info("Skipping previously rejected non-target raster export: %s", name)
+            continue
+        if target.exists() and not _local_geotiff_matches_target_grid(target):
+            target.unlink(missing_ok=True)
+            _download_manifest_path(target).unlink(missing_ok=True)
+            _write_rejected_download_manifest(target, item, "local GeoTIFF is not EPSG:5880 at 30 m")
+            LOGGER.warning("Removed local non-target raster export: %s", name)
+            continue
+        if _drive_export_is_empty(item):
+            target.unlink(missing_ok=True)
+            _download_manifest_path(target).unlink(missing_ok=True)
+            LOGGER.warning(
+                "Skipping empty Drive export %s. The Earth Engine export must be generated again.",
+                item.get("name", target.name),
+            )
+            continue
+        if _local_download_is_current(target, item):
+            LOGGER.debug("Skipping already-downloaded export: %s", target.name)
+            continue
+        expected_size = _drive_file_size(item)
+        size_note = f" ({expected_size / (1024 * 1024):.1f} MiB)" if expected_size is not None else ""
+        LOGGER.info("Raster download starting: %s%s", target.name, size_note)
+        if progress_callback is not None:
+            progress_callback("Downloading", f"{target.name}{size_note}")
+        _download_file(
+            drive_service,
+            item["id"],
+            target,
+            expected_size=expected_size,
+            progress_label="Raster download",
+            progress_callback=progress_callback,
+        )
+        if progress_callback is not None:
+            progress_callback("Compressing", target.name)
+        if not _local_geotiff_matches_target_grid(target):
+            _write_rejected_download_manifest(target, item, "downloaded GeoTIFF is not EPSG:5880 at 30 m")
+            target.unlink(missing_ok=True)
+            _download_manifest_path(target).unlink(missing_ok=True)
+            LOGGER.warning("Rejected non-target raster export after download: %s", name)
+            if progress_callback is not None:
+                progress_callback("Rejected", target.name)
+            continue
+        _rewrite_geotiff_lzw(target)
+        _write_download_manifest(target, item)
+        downloaded.append(target)
+        LOGGER.info("Raster download finished: %s", target.name)
+        if progress_callback is not None:
+            progress_callback("Downloaded", target.name)
+    return sorted(set(downloaded))
+
+
+def list_drive_raster_exports(drive_service: Any, settings: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return GeoTIFF raster export metadata from Drive without downloading files."""
     root_id = settings["google"].get("drive_folder_id")
     if not root_id:
         root_id = _find_drive_folder(drive_service, settings["google"]["drive_folder_name"])
     raster_folder = settings["google"]["drive_subfolders"].get("rasters", "02_raster_exports")
     raster_id = _ensure_drive_folder(drive_service, raster_folder, parent_id=root_id)
 
-    downloaded: list[Path] = []
+    drive_items: list[dict[str, Any]] = []
     page_token: str | None = None
     while True:
         list_kwargs: dict[str, Any] = {
@@ -315,68 +393,20 @@ def download_drive_raster_exports(
             name = str(item["name"])
             if not name.lower().endswith((".tif", ".tiff")):
                 continue
-            target = target_directory / name
-            if not _raster_export_name_matches_target_grid(name, settings):
-                if target.exists():
-                    target.unlink(missing_ok=True)
-                    _download_manifest_path(target).unlink(missing_ok=True)
-                    _rejected_download_manifest_path(target).unlink(missing_ok=True)
-                    LOGGER.warning("Removed local legacy raster export: %s", name)
-                LOGGER.info("Skipping redundant raster export outside target grid naming: %s", name)
-                continue
-            if _rejected_download_matches(target, item):
-                LOGGER.info("Skipping previously rejected non-target raster export: %s", name)
-                continue
-            if target.exists() and not _local_geotiff_matches_target_grid(target):
-                target.unlink(missing_ok=True)
-                _download_manifest_path(target).unlink(missing_ok=True)
-                _write_rejected_download_manifest(target, item, "local GeoTIFF is not EPSG:5880 at 30 m")
-                LOGGER.warning("Removed local non-target raster export: %s", name)
-                continue
-            if _drive_export_is_empty(item):
-                target.unlink(missing_ok=True)
-                _download_manifest_path(target).unlink(missing_ok=True)
-                LOGGER.warning(
-                    "Skipping empty Drive export %s. The Earth Engine export must be generated again.",
-                    item.get("name", target.name),
-                )
-                continue
-            if _local_download_is_current(target, item):
-                LOGGER.debug("Skipping already-downloaded export: %s", target.name)
-                continue
-            expected_size = _drive_file_size(item)
-            size_note = f" ({expected_size / (1024 * 1024):.1f} MiB)" if expected_size is not None else ""
-            LOGGER.info("Raster download starting: %s%s", target.name, size_note)
-            if progress_callback is not None:
-                progress_callback("Downloading", f"{target.name}{size_note}")
-            _download_file(
-                drive_service,
-                item["id"],
-                target,
-                expected_size=expected_size,
-                progress_label="Raster download",
-                progress_callback=progress_callback,
-            )
-            if progress_callback is not None:
-                progress_callback("Compressing", target.name)
-            if not _local_geotiff_matches_target_grid(target):
-                _write_rejected_download_manifest(target, item, "downloaded GeoTIFF is not EPSG:5880 at 30 m")
-                target.unlink(missing_ok=True)
-                _download_manifest_path(target).unlink(missing_ok=True)
-                LOGGER.warning("Rejected non-target raster export after download: %s", name)
-                if progress_callback is not None:
-                    progress_callback("Rejected", target.name)
-                continue
-            _rewrite_geotiff_lzw(target)
-            _write_download_manifest(target, item)
-            downloaded.append(target)
-            LOGGER.info("Raster download finished: %s", target.name)
-            if progress_callback is not None:
-                progress_callback("Downloaded", target.name)
+            drive_items.append(item)
         page_token = response.get("nextPageToken")
         if not page_token:
             break
-    return sorted(set(downloaded))
+    return drive_items
+
+def drive_raster_semantic_keys(drive_service: Any, settings: dict[str, Any]) -> set[str]:
+    """Return semantic keys for target-grid GeoTIFF raster exports already present in Drive."""
+    return {
+        raster_semantic_key(raster_product_stem(str(item["name"])))
+        for item in list_drive_raster_exports(drive_service, settings)
+        if _raster_export_name_matches_target_grid(str(item["name"]), settings)
+        and not _drive_export_is_empty(item)
+    }
 
 
 def _target_raster_suffix(settings: dict[str, Any]) -> str:
@@ -388,10 +418,39 @@ def _target_raster_suffix(settings: dict[str, Any]) -> str:
 
 
 def _raster_export_name_matches_target_grid(name: str, settings: dict[str, Any]) -> bool:
-    stem = Path(str(name)).stem
-    parts = stem.rsplit("-", 2)
-    product_stem = parts[0] if len(parts) == 3 and all(part.isdigit() for part in parts[1:]) else stem
+    product_stem = raster_product_stem(name)
     return product_stem.endswith(_target_raster_suffix(settings))
+
+
+def _preferred_drive_raster_stems(
+    drive_items: list[dict[str, Any]],
+    settings: dict[str, Any],
+    target_directory: Path,
+) -> dict[str, str]:
+    candidates_by_key: dict[str, set[str]] = {}
+    for item in drive_items:
+        name = str(item["name"])
+        if _raster_export_name_matches_target_grid(name, settings):
+            product_stem = raster_product_stem(name)
+            candidates_by_key.setdefault(raster_semantic_key(product_stem), set()).add(product_stem)
+
+    if target_directory.exists():
+        for path in target_directory.iterdir():
+            if path.is_file() and path.suffix.lower() in {".tif", ".tiff"}:
+                product_stem = raster_product_stem(path)
+                candidates_by_key.setdefault(raster_semantic_key(product_stem), set()).add(product_stem)
+
+    return {
+        key: preferred_raster_product_stem(stems)
+        for key, stems in candidates_by_key.items()
+        if stems
+    }
+
+
+def _unlink_download_with_manifests(path: Path) -> None:
+    path.unlink(missing_ok=True)
+    _download_manifest_path(path).unlink(missing_ok=True)
+    _rejected_download_manifest_path(path).unlink(missing_ok=True)
 
 
 def upload_report_image(drive_service: Any, settings: dict[str, Any], image_path: Path) -> str:

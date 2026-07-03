@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .catalog import ProductSpec
+from .raster_naming import raster_product_stem, raster_semantic_key
 
 
 @dataclass
@@ -90,16 +91,38 @@ def audit_pipeline_state(
 
     for spec in expected_rasters:
         tile_paths = _find_geotiff_group(geotiff_tile_directory, spec.name)
-        mosaic_path = geotiff_directory / f"{spec.name}.tif"
-        rst_path = idrisi_directory / f"{spec.name}.rst"
-        rdc_path = idrisi_directory / f"{spec.name}.rdc"
-        pal_path = idrisi_directory / f"{spec.name}.pal"
+        if not tile_paths:
+            tile_paths = _find_equivalent_geotiff_group(geotiff_tile_directory, spec.name)
+        mosaic_path = _find_equivalent_single_raster(
+            geotiff_directory,
+            spec.name,
+            {".tif", ".tiff"},
+            preferred_exact=geotiff_directory / f"{spec.name}.tif",
+        )
+        rst_path = _find_equivalent_single_raster(
+            idrisi_directory,
+            spec.name,
+            {".rst"},
+            preferred_exact=idrisi_directory / f"{spec.name}.rst",
+        )
+        rdc_path = _find_equivalent_single_raster(
+            idrisi_directory,
+            spec.name,
+            {".rdc"},
+            preferred_exact=idrisi_directory / f"{spec.name}.rdc",
+        )
+        pal_path = _find_equivalent_single_raster(
+            idrisi_directory,
+            spec.name,
+            {".pal"},
+            preferred_exact=idrisi_directory / f"{spec.name}.pal",
+        )
         stages = {
             "download": _multi_artifact_state(tile_paths, missing_detail="Missing GeoTIFF tile"),
-            "mosaic": _artifact_state(mosaic_path if mosaic_path.exists() else None, missing_detail="Missing mosaic"),
-            "idrisi_rst": _artifact_state(rst_path if rst_path.exists() else None, missing_detail="Missing IDRISI .rst"),
-            "idrisi_rdc": _artifact_state(rdc_path if rdc_path.exists() else None, missing_detail="Missing IDRISI .rdc"),
-            "idrisi_pal": _artifact_state(pal_path if pal_path.exists() else None, missing_detail="Missing IDRISI .pal"),
+            "mosaic": _artifact_state(mosaic_path, missing_detail="Missing mosaic"),
+            "idrisi_rst": _artifact_state(rst_path, missing_detail="Missing IDRISI .rst"),
+            "idrisi_rdc": _artifact_state(rdc_path, missing_detail="Missing IDRISI .rdc"),
+            "idrisi_pal": _artifact_state(pal_path, missing_detail="Missing IDRISI .pal"),
         }
         products[spec.name] = ProductState(
             name=spec.name,
@@ -108,7 +131,13 @@ def audit_pipeline_state(
             description=spec.description,
             status=_product_status(
                 spec.required,
-                [stages["download"], stages["mosaic"], stages["idrisi_rst"], stages["idrisi_rdc"]],
+                [
+                    stages["download"],
+                    stages["mosaic"],
+                    stages["idrisi_rst"],
+                    stages["idrisi_rdc"],
+                    stages["idrisi_pal"],
+                ],
             ),
             stages=stages,
         )
@@ -312,6 +341,41 @@ def _add_observed_csvs(products: dict[str, ProductState], table_directory: Path)
             status="observed",
             stages={"csv": _csv_artifact_state(path, missing_detail="")},
         )
+
+
+def _find_equivalent_geotiff_group(directory: Path, expected_name: str) -> list[Path]:
+    if not directory.exists():
+        return []
+    expected_key = raster_semantic_key(expected_name)
+    return sorted(
+        path
+        for path in directory.iterdir()
+        if path.is_file()
+        and path.suffix.lower() in {".tif", ".tiff"}
+        and raster_semantic_key(raster_product_stem(path)) == expected_key
+    )
+
+
+def _find_equivalent_single_raster(
+    directory: Path,
+    expected_name: str,
+    suffixes: set[str],
+    *,
+    preferred_exact: Path,
+) -> Path | None:
+    if preferred_exact.exists():
+        return preferred_exact
+    if not directory.exists():
+        return None
+    expected_key = raster_semantic_key(expected_name)
+    matches = sorted(
+        path
+        for path in directory.iterdir()
+        if path.is_file()
+        and path.suffix.lower() in suffixes
+        and raster_semantic_key(path.stem) == expected_key
+    )
+    return matches[0] if matches else None
 
 
 def _add_observed_rasters(

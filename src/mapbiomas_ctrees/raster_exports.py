@@ -5,8 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import logging
+import math
 from pathlib import Path
 import re
+import struct
 import time
 from typing import Any
 import warnings
@@ -174,11 +176,14 @@ from .constants import (
     FCBM_ACCURACY_REMAP,
     FCBM_RISK_INDEX_GROUPS,
     FCBM_VT0007_REMAP,
+    MAPBIOMAS_CLASS_COLORS,
+    MAPBIOMAS_LAND_COVER_CLASSES,
     MB_FCBM_TRANSITION_RULES,
     PRIMARY_MAPBIOMAS_YEARS,
 )
 from .data_preparation import PreparedInputs, resolve_mapbiomas_year, select_mapbiomas_year
 from .models import OrganizedData
+from .raster_naming import preferred_raster_product_stem, raster_product_stem, raster_semantic_key
 from .settings import Scenario
 
 LOGGER = logging.getLogger(__name__)
@@ -561,7 +566,7 @@ def build_raster_status_table(
     for product in products:
         name = product.name
         geotiff_present = (geotiff_directory / f"{name}.tif").exists()
-        idrisi_present = (idrisi_directory / f"{name}.rst").exists()
+        idrisi_present = _idrisi_outputs_present(name, idrisi_directory)
         task = tasks_by_name.get(name)
         category = _idrisi_product_type(name)
 
@@ -609,6 +614,17 @@ def build_raster_status_table(
     return pd.DataFrame(rows)
 
 
+def _idrisi_outputs_present(name: str, idrisi_directory: Path) -> bool:
+    rst_path = idrisi_directory / f"{name}.rst"
+    rdc_path = idrisi_directory / f"{name}.rdc"
+    pal_path = idrisi_directory / f"{name}.pal"
+    smp_path = idrisi_directory / f"{name}.smp"
+    if not rst_path.exists() or not rdc_path.exists():
+        return False
+    legend = _IDRISI_LEGENDS.get(_idrisi_product_type(name), [])
+    return not legend or (pal_path.exists() and smp_path.exists())
+
+
 def print_raster_status_table(table: pd.DataFrame) -> None:
     """Log a concise raster status summary, with the full table in verbose logs."""
     if table.empty:
@@ -619,19 +635,171 @@ def print_raster_status_table(table: pd.DataFrame) -> None:
     LOGGER.debug("Raster export status table:\n%s", table.to_string(index=False))
 
 
+def prune_duplicate_geotiff_products(directory: Path, label: str = "GeoTIFF raster") -> int:
+    """Remove local GeoTIFF products that duplicate a preferred semantic raster name."""
+    return _prune_duplicate_geotiffs(directory, label)
+
+
+def prune_duplicate_idrisi_products(directory: Path) -> int:
+    """Remove duplicate IDRISI product stems, keeping the preferred semantic name."""
+    grouped: dict[str, set[str]] = {}
+    if not directory.exists():
+        return 0
+    for path in directory.iterdir():
+        if path.is_file() and path.suffix.lower() in {".rst", ".rdc", ".pal", ".smp"}:
+            grouped.setdefault(raster_semantic_key(path.stem), set()).add(path.stem)
+
+    removed = 0
+    for stems in grouped.values():
+        if len(stems) <= 1:
+            continue
+        keep_stem = preferred_raster_product_stem(stems)
+        for stem in sorted(stems):
+            if stem == keep_stem:
+                continue
+            for suffix in (".rst", ".rdc", ".pal", ".smp", ".rst.tmp", ".rdc.tmp", ".pal.tmp", ".smp.tmp"):
+                path = directory / f"{stem}{suffix}"
+                if path.exists():
+                    path.unlink(missing_ok=True)
+                    removed += 1
+            LOGGER.warning("Removed duplicate IDRISI raster %s; kept %s.", stem, keep_stem)
+    return removed
+
+
+def ensure_idrisi_palettes(directory: Path) -> list[Path]:
+    """Create or refresh IDRISI palette sidecars for existing rasters with known legends."""
+    if not directory.exists():
+        return []
+
+    written: list[Path] = []
+    stems = {
+        path.stem
+        for path in directory.iterdir()
+        if path.is_file() and path.suffix.lower() in {".rst", ".rdc"}
+    }
+    for stem in sorted(stems):
+        rst_path = directory / f"{stem}.rst"
+        rdc_path = directory / f"{stem}.rdc"
+        if not rst_path.exists() or not rdc_path.exists():
+            continue
+
+        pal_path = directory / f"{stem}.pal"
+        smp_path = directory / f"{stem}.smp"
+        pal_tmp = pal_path.with_suffix(pal_path.suffix + ".tmp")
+        smp_tmp = smp_path.with_suffix(smp_path.suffix + ".tmp")
+        legend = _IDRISI_LEGENDS.get(_idrisi_product_type(stem), [])
+        if not legend:
+            pal_path.unlink(missing_ok=True)
+            smp_path.unlink(missing_ok=True)
+            pal_tmp.unlink(missing_ok=True)
+            smp_tmp.unlink(missing_ok=True)
+            continue
+
+        expected_text = _idrisi_pal_text(legend)
+        expected_smp = _idrisi_smp_bytes(legend)
+        pal_current = False
+        smp_current = False
+        try:
+            pal_current = pal_path.exists() and pal_path.read_text(encoding="ascii") == expected_text
+        except Exception:
+            pass
+        try:
+            smp_current = smp_path.exists() and smp_path.read_bytes() == expected_smp
+        except Exception:
+            pass
+        if not pal_current:
+            pal_tmp.write_text(expected_text, encoding="ascii")
+            pal_tmp.replace(pal_path)
+            written.append(pal_path)
+        if not smp_current:
+            smp_tmp.write_bytes(expected_smp)
+            smp_tmp.replace(smp_path)
+            written.append(smp_path)
+    return written
+
+
+def generate_idrisi_raster_panel(
+    idrisi_directory: Path,
+    output_path: Path | None = None,
+    columns: int = 4,
+    thumbnail_size: tuple[int, int] = (420, 360),
+) -> Path | None:
+    """Render all local IDRISI rasters into one PNG panel inside the IDRISI folder."""
+    if not idrisi_directory.exists():
+        return None
+    rst_paths = sorted(path for path in idrisi_directory.glob("*.rst") if path.with_suffix(".rdc").exists())
+    if not rst_paths:
+        return None
+
+    from PIL import Image, ImageDraw, ImageFont
+
+    output_path = output_path or (idrisi_directory / "idrisi_maps_panel.png")
+    columns = max(1, int(columns))
+    rows = math.ceil(len(rst_paths) / columns)
+    thumb_width, thumb_height = thumbnail_size
+    title_height = 78
+    cell_title_height = 54
+    gap = 22
+    margin = 32
+    cell_width = thumb_width
+    cell_height = cell_title_height + thumb_height
+    panel_width = margin * 2 + columns * cell_width + (columns - 1) * gap
+    panel_height = margin * 2 + title_height + rows * cell_height + (rows - 1) * gap
+
+    panel = Image.new("RGB", (panel_width, panel_height), "white")
+    draw = ImageDraw.Draw(panel)
+    title_font = _pil_font(ImageFont, 34, bold=True)
+    cell_font = _pil_font(ImageFont, 15, bold=True)
+    small_font = _pil_font(ImageFont, 12, bold=False)
+    title = f"IDRISI Raster Map Panel ({len(rst_paths)} maps)"
+    draw.text((margin, 24), title, fill=(116, 0, 0), font=title_font)
+    draw.text((margin, 58), str(idrisi_directory), fill=(70, 70, 70), font=small_font)
+
+    for index, rst_path in enumerate(rst_paths):
+        row, col = divmod(index, columns)
+        x = margin + col * (cell_width + gap)
+        y = margin + title_height + row * (cell_height + gap)
+        metadata = _read_idrisi_rdc(rst_path.with_suffix(".rdc"))
+        image = _render_idrisi_thumbnail(rst_path, metadata, thumbnail_size)
+        label = metadata.get("file title") or _idrisi_title(rst_path.stem)
+        draw.rounded_rectangle(
+            (x - 8, y - 8, x + cell_width + 8, y + cell_height + 8),
+            radius=6,
+            outline=(210, 210, 210),
+            fill=(248, 248, 248),
+        )
+        _draw_wrapped_text(draw, label, (x, y), cell_width, cell_font, fill=(116, 0, 0), max_lines=2)
+        panel.paste(image, (x, y + cell_title_height))
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    panel.save(output_path)
+    LOGGER.info("Generated IDRISI raster panel: %s", output_path)
+    return output_path
+
+
 def convert_geotiffs_to_idrisi(geotiff_directory: Path, idrisi_directory: Path) -> list[Path]:
     """Convert local GeoTIFF rasters to IDRISI .rst/.rdc pairs.
 
-    Also removes any .rst/.rdc/.pal left over from products that no longer
+    Also removes any .rst/.rdc/.pal/.smp left over from products that no longer
     exist as GeoTIFFs, so renamed or retired products don't linger under
     their old, stale file names alongside the current ones.
     """
     idrisi_directory.mkdir(parents=True, exist_ok=True)
     _remove_non_target_geotiffs(geotiff_directory)
+    _prune_duplicate_geotiffs(geotiff_directory, "GeoTIFF raster")
+    prune_duplicate_idrisi_products(idrisi_directory)
     current_stems = {geotiff.stem for geotiff in _iter_target_geotiff_files(geotiff_directory)}
-    for stale_path in list(idrisi_directory.glob("*.rst")) + list(idrisi_directory.glob("*.rdc")) + list(idrisi_directory.glob("*.pal")):
+    for stale_path in (
+        list(idrisi_directory.glob("*.rst"))
+        + list(idrisi_directory.glob("*.rdc"))
+        + list(idrisi_directory.glob("*.pal"))
+        + list(idrisi_directory.glob("*.smp"))
+    ):
         if stale_path.stem not in current_stems:
             stale_path.unlink(missing_ok=True)
+    palettes = ensure_idrisi_palettes(idrisi_directory)
+    if palettes:
+        LOGGER.info("Created or refreshed %d IDRISI palette file(s) in %s.", len(palettes), idrisi_directory)
 
     written = []
     for geotiff in _iter_target_geotiff_files(geotiff_directory):
@@ -650,6 +818,8 @@ def build_geotiff_mosaics(geotiff_directory: Path, mosaic_directory: Path) -> li
     """Create missing or stale LZW-compressed GeoTIFF mosaics per exported raster product."""
     mosaic_directory.mkdir(parents=True, exist_ok=True)
     _remove_non_target_geotiffs(mosaic_directory)
+    _prune_duplicate_geotiffs(geotiff_directory, "GeoTIFF tile")
+    _prune_duplicate_geotiffs(mosaic_directory, "GeoTIFF mosaic")
     groups: dict[str, list[Path]] = {}
     for path in _iter_target_geotiff_files(geotiff_directory):
         groups.setdefault(_geotiff_product_stem(path), []).append(path)
@@ -737,8 +907,52 @@ def _remove_non_target_geotiffs(directory: Path) -> None:
     for path in _iter_geotiff_files(directory):
         if _is_target_geotiff(path):
             continue
-        path.unlink(missing_ok=True)
+        _unlink_raster_file_with_sidecars(path)
         LOGGER.warning("Removed non-target GeoTIFF mosaic: %s", path.name)
+
+
+def _prune_duplicate_geotiffs(directory: Path, label: str) -> int:
+    grouped: dict[str, dict[str, list[Path]]] = {}
+    for path in _iter_geotiff_files(directory):
+        if not _is_target_geotiff(path):
+            continue
+        product_stem = _geotiff_product_stem(path)
+        key = raster_semantic_key(product_stem)
+        grouped.setdefault(key, {}).setdefault(product_stem, []).append(path)
+
+    removed = 0
+    for product_paths in grouped.values():
+        if len(product_paths) <= 1:
+            continue
+        keep_stem = preferred_raster_product_stem(set(product_paths))
+        for product_stem, paths in sorted(product_paths.items()):
+            if product_stem == keep_stem:
+                continue
+            for path in paths:
+                if _unlink_raster_file_with_sidecars(path):
+                    removed += 1
+            LOGGER.warning("Removed duplicate %s %s; kept %s.", label, product_stem, keep_stem)
+    return removed
+
+
+def _unlink_raster_file_with_sidecars(path: Path) -> bool:
+    removed = False
+    try:
+        path.unlink(missing_ok=True)
+        removed = True
+    except OSError as exc:
+        LOGGER.warning("Could not remove duplicate raster %s: %s", path.name, exc)
+        return False
+    for sidecar in (
+        path.with_name(path.name + ".drive.json"),
+        path.with_name(path.name + ".rejected.json"),
+        path.with_suffix(path.suffix + ".aux.xml"),
+    ):
+        try:
+            sidecar.unlink(missing_ok=True)
+        except OSError as exc:
+            LOGGER.warning("Could not remove raster sidecar %s: %s", sidecar.name, exc)
+    return removed
 
 
 def _is_target_geotiff(path: Path) -> bool:
@@ -781,14 +995,7 @@ def _assert_common_grid(
 
 
 def _geotiff_product_stem(path: Path) -> str:
-    stem = path.stem
-    parts = stem.rsplit("-", 2)
-    if len(parts) == 3 and all(part.isdigit() for part in parts[1:]):
-        return parts[0]
-    parts = stem.rsplit("_", 2)
-    if len(parts) == 3 and all(part.isdigit() for part in parts[1:]):
-        return parts[0]
-    return stem
+    return raster_product_stem(path)
 
 
 def _copy_geotiff_lzw(source_path: Path, output_path: Path) -> None:
@@ -868,7 +1075,7 @@ def _forest_to_nonforest_products(
             )
         )
 
-    for reference_name in ("DMJSS", "FCBM4"):
+    for reference_name in ("FCBM4",):
         reference = organized.references.get(reference_name)
         if reference is None or reference.image is None:
             continue
@@ -1230,122 +1437,122 @@ def _dmjss_mb_products(
     ]
 
 
+def _mapbiomas_lulc_legend() -> list[tuple[int, str, str]]:
+    return [
+        (code, MAPBIOMAS_LAND_COVER_CLASSES[code], MAPBIOMAS_CLASS_COLORS[code])
+        for code in sorted(MAPBIOMAS_LAND_COVER_CLASSES)
+    ]
+
+
+_IDRISI_NO_DATA_COLOR = "#000000"
+_IDRISI_NO_CHANGE_COLOR = "#ffffff"
+_IDRISI_FOREST_COLOR = "#238b45"
+_IDRISI_STABLE_FOREST_COLOR = "#006d2c"
+_IDRISI_NON_FOREST_COLOR = "#c7b37f"
+_IDRISI_STABLE_NON_FOREST_COLOR = "#d9c98f"
+_IDRISI_LOSS_COLOR = "#e31a1c"
+_IDRISI_LOSS_EARLY_COLOR = "#fdae61"
+_IDRISI_LOSS_LATE_COLOR = "#d7191c"
+_IDRISI_GAIN_COLOR = "#2c7fb8"
+_IDRISI_REGROWTH_COLOR = "#41b6c4"
+_IDRISI_BUFFER_COLOR = "#ffff99"
+_IDRISI_AGREEMENT_COLOR = "#7f0000"
+_IDRISI_CTREES_ONLY_COLOR = "#00bcd4"
+_IDRISI_MAPBIOMAS_ONLY_COLOR = "#ffcc33"
+_IDRISI_TEMPORAL_MIDPOINT_COLOR = "#756bb1"
+_IDRISI_TEMPORAL_CONTINUOUS_COLOR = "#084081"
+_IDRISI_DEFORESTED_REGROWTH_COLOR = "#b15928"
+
+
 _IDRISI_LEGENDS: dict[str, list[tuple[int, str, str]]] = {
     "persistence": [
-        (1, "Persistent Forest", "#1b9e77"),
-        (2, "Persistent Non-Forest", "#c7b37f"),
-        (3, "Land-Cover Change", "#d95f02"),
+        (1, "Persistent Forest", _IDRISI_STABLE_FOREST_COLOR),
+        (2, "Persistent Non-Forest", _IDRISI_STABLE_NON_FOREST_COLOR),
+        (3, "Land-Cover Change", _IDRISI_LOSS_EARLY_COLOR),
     ],
     "binary_forest": [
-        (0, "Non-Forest", "#c7b37f"),
-        (1, "Forest", "#1b9e77"),
+        (0, "Non-Forest", _IDRISI_NON_FOREST_COLOR),
+        (1, "Forest", _IDRISI_FOREST_COLOR),
     ],
     "dmjss": [
-        (0, "Stable Non-Forest", "#c7b37f"),
-        (1, "Stable Forest", "#1b1b1b"),
-        (2, "Deforestation", "#ff2d2d"),
-        (3, "Regrowth", "#66ccff"),
-        (4, "Buffer", "#e0b85a"),
+        (0, "Stable Non-Forest", _IDRISI_STABLE_NON_FOREST_COLOR),
+        (1, "Stable Forest", _IDRISI_STABLE_FOREST_COLOR),
+        (2, "Deforestation", _IDRISI_LOSS_COLOR),
+        (3, "Regrowth", _IDRISI_REGROWTH_COLOR),
+        (4, "Buffer", _IDRISI_BUFFER_COLOR),
     ],
     "forest_loss": [
-        (0, "No Change", "#c7b37f"),
-        (1, "Forest to Non-Forest (Loss)", "#ff2d2d"),
+        (0, "No Change", _IDRISI_NO_CHANGE_COLOR),
+        (1, "Forest to Non-Forest (Loss)", _IDRISI_LOSS_COLOR),
     ],
     "change4": [
-        (1, "Stable Forest", "#238b45"),
-        (2, "Stable Non-Forest", "#c7b37f"),
-        (3, "Forest Loss", "#ff2d2d"),
-        (4, "Forest Gain", "#66a9cf"),
+        (0, "No Data", _IDRISI_NO_DATA_COLOR),
+        (1, "Stable Forest", _IDRISI_STABLE_FOREST_COLOR),
+        (2, "Stable Non-Forest", _IDRISI_STABLE_NON_FOREST_COLOR),
+        (3, "Forest Loss", _IDRISI_LOSS_COLOR),
+        (4, "Forest Gain", _IDRISI_GAIN_COLOR),
     ],
     "valid_mask": [
-        (0, "Outside Analysis Area", "#f7f7f7"),
-        (1, "Valid Analysis Area", "#1b9e77"),
+        (0, "Outside Analysis Area", _IDRISI_NO_CHANGE_COLOR),
+        (1, "Valid Analysis Area", _IDRISI_FOREST_COLOR),
     ],
     "loss_agreement3": [
-        (1, "Both Sources Agree (Loss)", "#ff2d2d"),
-        (2, "CTrees Only", "#00e5ff"),
-        (3, "MapBiomas Only", "#ffcc00"),
+        (1, "Both Sources Agree (Loss)", _IDRISI_AGREEMENT_COLOR),
+        (2, "CTrees Only", _IDRISI_CTREES_ONLY_COLOR),
+        (3, "MapBiomas Only", _IDRISI_MAPBIOMAS_ONLY_COLOR),
     ],
     "fcbm_index8": [
-        (1, "No forest at T1, T2, or T3", "#c7b37f"),
-        (2, "Forest only at T3", "#66a9cf"),
-        (3, "Forest only at T2", "#7570b3"),
-        (4, "Forest at T2 and T3", "#2b6cb0"),
-        (5, "Stable Forest", "#1b9e77"),
-        (6, "Deforested T1->T2, remained non-forest", "#ff2d2d"),
-        (7, "Deforested T1->T2, regrew by T3", "#d95f02"),
-        (8, "Deforested T2->T3", "#c0392b"),
+        (1, "No forest at T1, T2, or T3", _IDRISI_STABLE_NON_FOREST_COLOR),
+        (2, "Forest only at T3", _IDRISI_GAIN_COLOR),
+        (3, "Forest only at T2", _IDRISI_TEMPORAL_MIDPOINT_COLOR),
+        (4, "Forest at T2 and T3", _IDRISI_TEMPORAL_CONTINUOUS_COLOR),
+        (5, "Stable Forest", _IDRISI_STABLE_FOREST_COLOR),
+        (6, "Deforested T1->T2, remained non-forest", _IDRISI_LOSS_EARLY_COLOR),
+        (7, "Deforested T1->T2, regrew by T3", _IDRISI_DEFORESTED_REGROWTH_COLOR),
+        (8, "Deforested T2->T3", _IDRISI_LOSS_LATE_COLOR),
     ],
     "fcbm_vt0007": [
-        (1, "Stable Non-Forest", "#c7b37f"),
-        (2, "Stable Forest", "#1b9e77"),
-        (3, "Deforested - First Half of HRP", "#d95f02"),
-        (4, "Deforested - Second Half of HRP", "#ff2d2d"),
+        (1, "Stable Non-Forest", _IDRISI_STABLE_NON_FOREST_COLOR),
+        (2, "Stable Forest", _IDRISI_STABLE_FOREST_COLOR),
+        (3, "Deforested - First Half of HRP", _IDRISI_LOSS_EARLY_COLOR),
+        (4, "Deforested - Second Half of HRP", _IDRISI_LOSS_LATE_COLOR),
+    ],
+    "fcbm4": [
+        (0, "No Data", _IDRISI_NO_DATA_COLOR),
+        (1, "Stable Non-Forest", _IDRISI_STABLE_NON_FOREST_COLOR),
+        (2, "Stable Forest", _IDRISI_STABLE_FOREST_COLOR),
+        (3, "Deforested - First Half of HRP", _IDRISI_LOSS_EARLY_COLOR),
+        (4, "Deforested - Second Half of HRP", _IDRISI_LOSS_LATE_COLOR),
     ],
     "fcbm_accuracy": [
-        (1, "Non-Forest at End of HRP", "#c7b37f"),
-        (2, "Forest at End of HRP", "#1b9e77"),
-        (3, "Deforested within HRP", "#ff2d2d"),
+        (1, "Non-Forest at End of HRP", _IDRISI_NON_FOREST_COLOR),
+        (2, "Forest at End of HRP", _IDRISI_FOREST_COLOR),
+        (3, "Deforested within HRP", _IDRISI_LOSS_COLOR),
     ],
     "binary_nonforest": [
-        (0, "Forest", "#1b9e77"),
-        (1, "Non-Forest", "#c7b37f"),
+        (0, "Forest", _IDRISI_FOREST_COLOR),
+        (1, "Non-Forest", _IDRISI_NON_FOREST_COLOR),
     ],
     "distance": [],
-    "lulc": [
-        (1,  "Forest",                          "#1f8d49"),
-        (3,  "Forest Formation",                "#1f8d49"),
-        (4,  "Savanna Formation",               "#7dc975"),
-        (5,  "Mangrove",                        "#04381d"),
-        (6,  "Floodable Forest",                "#007785"),
-        (9,  "Forest Plantation",               "#7a5900"),
-        (10, "Herbaceous and Shrubby Veg.",     "#d6bc74"),
-        (11, "Wetland",                         "#519799"),
-        (12, "Grassland",                       "#d6bc74"),
-        (14, "Farming",                         "#ffefc3"),
-        (15, "Pasture",                         "#edde8e"),
-        (18, "Agriculture",                     "#e974ed"),
-        (19, "Temporary Crop",                  "#c27ba0"),
-        (20, "Sugar Cane",                      "#db7093"),
-        (21, "Mosaic of Uses",                  "#ffefc3"),
-        (22, "Non Vegetated Area",              "#d4271e"),
-        (23, "Beach, Dune and Sand Spot",       "#ffa07a"),
-        (24, "Urban Area",                      "#d4271e"),
-        (25, "Other Non Vegetated Areas",       "#db4d4f"),
-        (26, "Water",                           "#2532e4"),
-        (27, "Not Observed",                    "#ffffff"),
-        (29, "Rocky Outcrop",                   "#ffaa5f"),
-        (30, "Mining",                          "#9c0027"),
-        (31, "Aquaculture",                     "#091077"),
-        (32, "Hypersaline Tidal Flat",          "#fc8114"),
-        (33, "River, Lake, and Ocean",          "#2532e4"),
-        (35, "Palm Oil",                        "#9065d0"),
-        (36, "Perennial Crop",                  "#d082de"),
-        (39, "Soybean",                         "#f5b3c8"),
-        (40, "Rice",                            "#c71585"),
-        (41, "Other Temporary Crops",           "#f54ca9"),
-        (46, "Coffee",                          "#d68fe2"),
-        (47, "Citrus",                          "#9932cc"),
-        (48, "Other Perennial Crops",           "#e6ccff"),
-        (49, "Wooded Sandbank Vegetation",      "#02d659"),
-        (50, "Herbaceous Sandbank Vegetation",  "#ad5100"),
-        (62, "Cotton",                          "#ff69b4"),
-        (75, "Photovoltaic Power Plant",        "#c12100"),
-    ],
+    "lulc": _mapbiomas_lulc_legend(),
 }
 
 
 def _idrisi_product_type(stem: str) -> str:
     s = stem.lower()
+    if "distfromnf" in s or "dist_from_nf" in s or "distance" in s:
+        return "distance"
     if "persistence" in s:
         return "persistence"
     if "agreement" in s or "cross_forestloss" in s or "lossagreement" in s:
         return "loss_agreement3"
+    if "fcbm4" in s:
+        return "fcbm4"
     if "forestchange4" in s:
         return "change4"
     if "forestloss" in s or "change_foresttononforest" in s or "change_f2nf" in s:
         return "forest_loss"
-    if "lulc" in s or "landcover" in s:
+    if "lulc" in s or "landcover" in s or "land_cover" in s:
         return "lulc"
     if "vt0007" in s or "table15" in s:
         return "fcbm_vt0007"
@@ -1359,9 +1566,14 @@ def _idrisi_product_type(stem: str) -> str:
         return "valid_mask"
     if "dmjss" in s:
         return "dmjss"
-    if "distfromnf" in s or "dist_from_nf" in s:
-        return "distance"
-    if "nonforest_input" in s:
+    if "forestnonforest" in s or "binary_forest" in s:
+        return "binary_forest"
+    if (
+        "nonforest_input" in s
+        or "non_forest_input" in s
+        or "binary_nonforest" in s
+        or re.search(r"(?:^|_)non[_-]?forest(?:_|$)", s)
+    ):
         return "binary_nonforest"
     if "forest_input" in s:
         return "binary_forest"
@@ -1377,7 +1589,6 @@ def _idrisi_title(stem: str) -> str:
         ("UDefA_MB_LULC_Annual_SIRGAS", "MapBiomas Annual Land Cover 1985-2024 (SIRGAS)"),
         ("UDefA_Ct_ForestLoss_Cal_SIRGAS", "CTrees Forest Loss - Calibration Period (SIRGAS)"),
         ("UDefA_Ct_ForestLoss_Con_SIRGAS", "CTrees Forest Loss - Confirmation Period (SIRGAS)"),
-        ("UDefA_Ct_DMJSS_ForestLoss_SIRGAS", "CTrees DMJSS Forest Loss (SIRGAS)"),
         ("UDefA_Ct_DMJSS_SIRGAS", "CTrees DMJSS Deforestation Map (SIRGAS)"),
         ("UDefA_Ct_Forest_T1_SIRGAS", "CTrees Forest Cover T1 (SIRGAS)"),
         ("UDefA_Ct_Forest_T2_SIRGAS", "CTrees Forest Cover T2 (SIRGAS)"),
@@ -1400,7 +1611,6 @@ def _idrisi_title(stem: str) -> str:
         ("UDefA_MB_ForestChange4_", "MapBiomas 4-Class Forest Change - "),
         ("UDefA_Ct_ForestChange4_", "CTrees 4-Class Forest Change - "),
         ("UDefA_Ct_MB_Agreement_", "CTrees vs MapBiomas Loss Agreement - "),
-        ("UDefA_Ct_DMJSS_ForestLoss", "CTrees DMJSS Forest Loss"),
         ("UDefA_Ct_FCBM4_ForestLoss", "CTrees FCBM4 Forest Loss"),
         ("UDefA_MB_ForestLoss_", "MapBiomas Forest Loss - "),
         ("UDefA_Ct_ForestLoss_", "CTrees Forest Loss - "),
@@ -1432,7 +1642,6 @@ def _idrisi_title(stem: str) -> str:
         ("Change_ForestToNonForest_MapBiomas_2013_2018", "MapBiomas Forest Loss 2013-2018"),
         ("Change_ForestToNonForest_MapBiomas_2018_2024", "MapBiomas Forest Loss 2018-2024"),
         ("Change_ForestToNonForest_MapBiomas_1985_2024", "MapBiomas Forest Loss 1985-2024"),
-        ("Change_ForestToNonForest_CTrees_DMJSS", "CTrees Forest Loss - DMJSS"),
         ("Change_ForestToNonForest_CTrees_FCBM1_2009_to_FCBM2_2013", "CTrees Forest Loss 2009-2013"),
         ("Change_ForestToNonForest_CTrees_FCBM2_2013_to_FCBM3_2018", "CTrees Forest Loss 2013-2018"),
         ("Change_ForestToNonForest_CTrees_FCBM4", "CTrees Forest Loss - FCBM4"),
@@ -1470,13 +1679,193 @@ def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
     return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
 
 
-def _write_idrisi_pal(pal_path: Path, legend: list[tuple[int, str, str]]) -> None:
+def _idrisi_pal_text(legend: list[tuple[int, str, str]]) -> str:
     color_map = {value: _hex_to_rgb(color) for value, _label, color in legend}
     lines = []
     for i in range(256):
-        r, g, b = color_map.get(i, (127, 127, 127))
+        r, g, b = color_map.get(i, (0, 0, 0))
         lines.append(f"{r} {g} {b}")
-    pal_path.write_text("\n".join(lines) + "\n", encoding="ascii")
+    return "\n".join(lines) + "\n"
+
+
+def _idrisi_smp_bytes(legend: list[tuple[int, str, str]]) -> bytes:
+    color_map = {value: _hex_to_rgb(color) for value, _label, color in legend}
+    data = bytearray()
+    data.extend(b"[Idrisi]")
+    data.extend(bytes((1, 11, 8, 18)))
+    data.extend(struct.pack("<HHH", 255, 0, 255))
+    for i in range(256):
+        data.extend(color_map.get(i, (0, 0, 0)))
+    return bytes(data)
+
+
+def _write_idrisi_pal(pal_path: Path, legend: list[tuple[int, str, str]]) -> None:
+    pal_path.write_text(_idrisi_pal_text(legend), encoding="ascii")
+
+
+def _write_idrisi_smp(smp_path: Path, legend: list[tuple[int, str, str]]) -> None:
+    smp_path.write_bytes(_idrisi_smp_bytes(legend))
+
+
+def _idrisi_legend_lines(legend: list[tuple[int, str, str]]) -> list[str]:
+    lines = [f"legend cats : {len(legend)}"]
+    for value, label, _color in legend:
+        lines.append(f"code {value:<7}: {label}")
+    return lines
+
+
+def _rdc_has_current_legend(rdc_path: Path, legend: list[tuple[int, str, str]]) -> bool:
+    try:
+        rdc_text = rdc_path.read_text(encoding="ascii")
+    except Exception:
+        return False
+    return all(line in rdc_text for line in _idrisi_legend_lines(legend))
+
+
+def _rdc_has_current_title(rdc_path: Path, title: str) -> bool:
+    try:
+        rdc_text = rdc_path.read_text(encoding="ascii")
+    except Exception:
+        return False
+    return f"file title  : {title}" in rdc_text
+
+
+def _read_idrisi_rdc(rdc_path: Path) -> dict[str, str]:
+    metadata: dict[str, str] = {}
+    try:
+        lines = rdc_path.read_text(encoding="ascii").splitlines()
+    except UnicodeDecodeError:
+        lines = rdc_path.read_text(encoding="latin-1").splitlines()
+    for line in lines:
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        metadata[key.strip().lower()] = value.strip()
+    return metadata
+
+
+def _idrisi_metadata_int(metadata: dict[str, str], key: str, default: int = 0) -> int:
+    try:
+        return int(float(metadata.get(key, str(default))))
+    except (TypeError, ValueError):
+        return default
+
+
+def _idrisi_metadata_float(metadata: dict[str, str], key: str, default: float = 0.0) -> float:
+    try:
+        return float(metadata.get(key, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _read_idrisi_color_table(stem_path: Path) -> np.ndarray | None:
+    smp_path = stem_path.with_suffix(".smp")
+    if smp_path.exists():
+        data = smp_path.read_bytes()
+        if len(data) >= 18 + 256 * 3 and data[:8] == b"[Idrisi]":
+            return np.frombuffer(data[18 : 18 + 256 * 3], dtype=np.uint8).reshape(256, 3).copy()
+
+    pal_path = stem_path.with_suffix(".pal")
+    if pal_path.exists():
+        rows: list[tuple[int, int, int]] = []
+        for line in pal_path.read_text(encoding="ascii").splitlines()[:256]:
+            parts = line.split()
+            if len(parts) < 3:
+                return None
+            try:
+                rows.append(tuple(max(0, min(255, int(part))) for part in parts[:3]))
+            except ValueError:
+                return None
+        if len(rows) == 256:
+            return np.array(rows, dtype=np.uint8)
+    return None
+
+
+def _render_idrisi_thumbnail(rst_path: Path, metadata: dict[str, str], thumbnail_size: tuple[int, int]):
+    from PIL import Image
+
+    width = _idrisi_metadata_int(metadata, "columns")
+    height = _idrisi_metadata_int(metadata, "rows")
+    if width <= 0 or height <= 0:
+        raise RuntimeError(f"Invalid IDRISI dimensions for {rst_path.name}")
+
+    target_width, target_height = thumbnail_size
+    stride = max(1, math.ceil(max(width / target_width, height / target_height)))
+    raster = np.memmap(rst_path, dtype=np.int16, mode="r", shape=(height, width))
+    sample = np.asarray(raster[::stride, ::stride])
+    color_table = _read_idrisi_color_table(rst_path)
+    flag_value = _idrisi_metadata_int(metadata, "flag value", _IDRISI_NODATA)
+    valid_mask = sample != flag_value
+
+    if color_table is not None and sample.size and sample.min() >= 0 and sample.max() <= 255:
+        rgb = color_table[sample.astype(np.uint8)]
+        rgb = rgb.copy()
+        rgb[~valid_mask] = (0, 0, 0)
+    else:
+        rgb = _grayscale_thumbnail(sample, valid_mask, metadata)
+
+    image = Image.fromarray(rgb.astype(np.uint8), "RGB")
+    image.thumbnail(thumbnail_size, Image.Resampling.NEAREST)
+    canvas = Image.new("RGB", thumbnail_size, "black")
+    x = (thumbnail_size[0] - image.width) // 2
+    y = (thumbnail_size[1] - image.height) // 2
+    canvas.paste(image, (x, y))
+    return canvas
+
+
+def _grayscale_thumbnail(sample: np.ndarray, valid_mask: np.ndarray, metadata: dict[str, str]) -> np.ndarray:
+    valid_values = sample[valid_mask]
+    if valid_values.size:
+        data_min = _idrisi_metadata_float(metadata, "display min", float(valid_values.min()))
+        data_max = _idrisi_metadata_float(metadata, "display max", float(valid_values.max()))
+        if data_max <= data_min:
+            data_min = float(valid_values.min())
+            data_max = float(valid_values.max())
+    else:
+        data_min, data_max = 0.0, 1.0
+    scale = 255.0 / max(data_max - data_min, 1.0)
+    gray = np.clip((sample.astype(np.float32) - data_min) * scale, 0, 255).astype(np.uint8)
+    gray[~valid_mask] = 0
+    return np.stack([gray, gray, gray], axis=2)
+
+
+def _pil_font(image_font_module: Any, size: int, bold: bool = False):
+    names = ["arialbd.ttf", "Arial Bold.ttf"] if bold else ["arial.ttf", "Arial.ttf"]
+    for name in names:
+        try:
+            return image_font_module.truetype(name, size=size)
+        except OSError:
+            continue
+    return image_font_module.load_default()
+
+
+def _draw_wrapped_text(draw: Any, text: str, xy: tuple[int, int], width: int, font: Any, fill: tuple[int, int, int], max_lines: int) -> None:
+    words = str(text).replace("_", " ").split()
+    lines: list[str] = []
+    current = ""
+    for word in words:
+        candidate = f"{current} {word}".strip()
+        if _text_width(draw, candidate, font) <= width or not current:
+            current = candidate
+            continue
+        lines.append(current)
+        current = word
+        if len(lines) >= max_lines:
+            break
+    if current and len(lines) < max_lines:
+        lines.append(current)
+    if len(lines) == max_lines and len(" ".join(words)) > len(" ".join(lines)):
+        while lines[-1] and _text_width(draw, lines[-1] + "...", font) > width:
+            lines[-1] = lines[-1][:-1].rstrip()
+        lines[-1] = lines[-1] + "..."
+    x, y = xy
+    for offset, line in enumerate(lines[:max_lines]):
+        draw.text((x, y + offset * 20), line, fill=fill, font=font)
+
+
+def _text_width(draw: Any, text: str, font: Any) -> int:
+    bbox = draw.textbbox((0, 0), text, font=font)
+    return int(bbox[2] - bbox[0])
 
 
 _IDRISI_BLOCK_ROWS = 2048
@@ -1553,10 +1942,12 @@ def _write_idrisi_pair(geotiff_path: Path, idrisi_directory: Path) -> Path:
     rst_path = idrisi_directory / f"{geotiff_path.stem}.rst"
     rdc_path = idrisi_directory / f"{geotiff_path.stem}.rdc"
     pal_path = idrisi_directory / f"{geotiff_path.stem}.pal"
+    smp_path = idrisi_directory / f"{geotiff_path.stem}.smp"
     rst_tmp = rst_path.with_suffix(rst_path.suffix + ".tmp")
     rdc_tmp = rdc_path.with_suffix(rdc_path.suffix + ".tmp")
     pal_tmp = pal_path.with_suffix(pal_path.suffix + ".tmp")
-    for temporary in (rst_tmp, rdc_tmp, pal_tmp):
+    smp_tmp = smp_path.with_suffix(smp_path.suffix + ".tmp")
+    for temporary in (rst_tmp, rdc_tmp, pal_tmp, smp_tmp):
         temporary.unlink(missing_ok=True)
 
     with rasterio.open(geotiff_path) as dataset:
@@ -1613,9 +2004,7 @@ def _write_idrisi_pair(geotiff_path: Path, idrisi_directory: Path) -> Path:
         legend = _IDRISI_LEGENDS.get(product_type, [])
         title = _idrisi_title(geotiff_path.stem)
         value_units = "m" if product_type == "distance" else "class"
-        legend_lines = [f"legend cats : {len(legend)}"]
-        for value, label, _color in legend:
-            legend_lines.append(f"code {value:<7}: {label}")
+        legend_lines = _idrisi_legend_lines(legend)
         rdc_tmp.write_text(
             "\n".join(
                 [
@@ -1650,6 +2039,7 @@ def _write_idrisi_pair(geotiff_path: Path, idrisi_directory: Path) -> Path:
         )
         if legend:
             _write_idrisi_pal(pal_tmp, legend)
+            _write_idrisi_smp(smp_tmp, legend)
     expected_rst_bytes = int(width) * int(height) * np.dtype(np.int16).itemsize
     if not rst_tmp.exists() or rst_tmp.stat().st_size != expected_rst_bytes:
         raise RuntimeError(
@@ -1660,14 +2050,19 @@ def _write_idrisi_pair(geotiff_path: Path, idrisi_directory: Path) -> Path:
         raise RuntimeError(f"IDRISI temporary metadata was not written for {geotiff_path.name}")
     if legend and (not pal_tmp.exists() or pal_tmp.stat().st_size <= 0):
         raise RuntimeError(f"IDRISI temporary palette was not written for {geotiff_path.name}")
+    if legend and (not smp_tmp.exists() or smp_tmp.stat().st_size <= 0):
+        raise RuntimeError(f"IDRISI temporary symbol palette was not written for {geotiff_path.name}")
 
     rst_tmp.replace(rst_path)
     rdc_tmp.replace(rdc_path)
     if legend:
         pal_tmp.replace(pal_path)
+        smp_tmp.replace(smp_path)
     else:
         pal_path.unlink(missing_ok=True)
+        smp_path.unlink(missing_ok=True)
         pal_tmp.unlink(missing_ok=True)
+        smp_tmp.unlink(missing_ok=True)
     return rst_path
 
 
@@ -1675,6 +2070,7 @@ def _idrisi_outputs_current(geotiff_path: Path, idrisi_directory: Path) -> bool:
     rst_path = idrisi_directory / f"{geotiff_path.stem}.rst"
     rdc_path = idrisi_directory / f"{geotiff_path.stem}.rdc"
     pal_path = idrisi_directory / f"{geotiff_path.stem}.pal"
+    smp_path = idrisi_directory / f"{geotiff_path.stem}.smp"
     if not rst_path.exists() or not rdc_path.exists():
         return False
     source_mtime = geotiff_path.stat().st_mtime
@@ -1687,7 +2083,29 @@ def _idrisi_outputs_current(geotiff_path: Path, idrisi_directory: Path) -> bool:
         return False
     product_type = _idrisi_product_type(geotiff_path.stem)
     legend = _IDRISI_LEGENDS.get(product_type, [])
-    if legend and (not pal_path.exists() or pal_path.stat().st_mtime < source_mtime or pal_path.stat().st_size <= 0):
+    title = _idrisi_title(geotiff_path.stem)
+    if not _rdc_has_current_title(rdc_path, title):
+        return False
+    if legend and (
+        not pal_path.exists()
+        or pal_path.stat().st_mtime < source_mtime
+        or pal_path.stat().st_size <= 0
+        or not smp_path.exists()
+        or smp_path.stat().st_mtime < source_mtime
+        or smp_path.stat().st_size <= 0
+    ):
+        return False
+    if legend:
+        try:
+            if pal_path.read_text(encoding="ascii") != _idrisi_pal_text(legend):
+                return False
+            if smp_path.read_bytes() != _idrisi_smp_bytes(legend):
+                return False
+        except Exception:
+            return False
+        if not _rdc_has_current_legend(rdc_path, legend):
+            return False
+    elif pal_path.exists() or smp_path.exists():
         return False
     return True
 
@@ -1710,7 +2128,7 @@ def _idrisi_expected_dimensions(dataset: rasterio.DatasetReader) -> tuple[int, i
 
 
 def _cleanup_idrisi_temporaries(geotiff_path: Path, idrisi_directory: Path) -> None:
-    for suffix in (".rst.tmp", ".rdc.tmp", ".pal.tmp"):
+    for suffix in (".rst.tmp", ".rdc.tmp", ".pal.tmp", ".smp.tmp"):
         (idrisi_directory / f"{geotiff_path.stem}{suffix}").unlink(missing_ok=True)
 
 

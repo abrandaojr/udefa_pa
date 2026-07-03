@@ -12,7 +12,7 @@ import ee
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
 
-from .constants import MAPBIOMAS_LAND_COVER_CLASSES, PRIMARY_MAPBIOMAS_YEARS
+from .constants import MAPBIOMAS_CLASS_COLORS, MAPBIOMAS_LAND_COVER_CLASSES, PRIMARY_MAPBIOMAS_YEARS
 from .data_preparation import PreparedInputs, resolve_mapbiomas_year, select_mapbiomas_year
 from .models import AnalysisResults, OrganizedData
 from .settings import Scenario
@@ -35,53 +35,13 @@ PURPLE = "#7570b3"
 YELLOW = "#e6ab02"
 SKY = "#66a9cf"
 PAPER = "#ffffff"
-PALETTE_PERSISTENCE = ["1b9e77", "c7b37f", "d95f02"]
-PALETTE_BINARY = ["c7b37f", "1b9e77"]
-PALETTE_CHANGE = ["c7b37f", "238b45", "ff2d2d", "66a9cf", "bdbdbd"]
-PALETTE_CONCORDANCE = ["bdbdbd", "1b9e77", "c7b37f", "c0392b"]
+PALETTE_PERSISTENCE = ["238b45", "c7b37f", "d95f02"]
+PALETTE_BINARY = ["c7b37f", "238b45"]
+PALETTE_CHANGE = ["c7b37f", "238b45", "ff2d2d", "66a9cf", "e0b85a"]
+PALETTE_CONCORDANCE = ["bdbdbd", "238b45", "c7b37f", "c0392b"]
 PALETTE_CHANGE4 = ["238b45", "c7b37f", "ff2d2d", "66a9cf"]
-PALETTE_AGREEMENT5 = ["1b9e77", "c7b37f", "d95f02", "66a9cf", "c0392b"]
+PALETTE_AGREEMENT5 = ["238b45", "c7b37f", "d95f02", "66a9cf", "c0392b"]
 PALETTE_LOSS_AGREEMENT3 = ["ff2d2d", "00e5ff", "ffcc00"]
-MAPBIOMAS_CLASS_COLORS = {
-    1: "#1f8d49",
-    3: "#1f8d49",
-    4: "#7dc975",
-    5: "#04381d",
-    6: "#007785",
-    9: "#7a5900",
-    10: "#d6bc74",
-    11: "#519799",
-    12: "#d6bc74",
-    14: "#ffefc3",
-    15: "#edde8e",
-    18: "#e974ed",
-    19: "#c27ba0",
-    20: "#db7093",
-    21: "#ffefc3",
-    22: "#d4271e",
-    23: "#ffa07a",
-    24: "#d4271e",
-    25: "#db4d4f",
-    26: "#2532e4",
-    27: "#ffffff",
-    29: "#ffaa5f",
-    30: "#9c0027",
-    31: "#091077",
-    32: "#fc8114",
-    33: "#2532e4",
-    35: "#9065d0",
-    36: "#d082de",
-    39: "#f5b3c8",
-    40: "#c71585",
-    41: "#f54ca9",
-    46: "#d68fe2",
-    47: "#9932cc",
-    48: "#e6ccff",
-    49: "#02d659",
-    50: "#ad5100",
-    62: "#ff69b4",
-    75: "#c12100",
-}
 MAPBIOMAS_LEGEND_GROUPS = [
     (
         "Forest",
@@ -790,7 +750,7 @@ def _forest_to_nonforest_maps(
             f"MapBiomas forest-to-nonforest change, {start_year}-{resolved_end_year}",
         )
     ]
-    for reference_name in ("DMJSS", "FCBM4"):
+    for reference_name in ("FCBM4",):
         reference = organized.references.get(reference_name)
         if reference is None or reference.image is None:
             continue

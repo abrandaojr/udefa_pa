@@ -53,6 +53,7 @@ from src.mapbiomas_ctrees.google_services import (
     build_docs_service,
     build_drive_service,
     build_sheets_service,
+    drive_raster_semantic_keys,
     download_drive_exports,
     download_drive_raster_exports,
     ensure_drive_raster_folder,
@@ -71,12 +72,16 @@ from src.mapbiomas_ctrees.pipeline_state import (
 )
 from src.mapbiomas_ctrees.presentation import build_powerpoint_presentation
 from src.mapbiomas_ctrees.progress import WorkflowProgress
+from src.mapbiomas_ctrees.raster_naming import raster_semantic_key
 from src.mapbiomas_ctrees.raster_exports import (
     build_geotiff_mosaics,
     build_raster_products,
     build_raster_status_table,
     convert_geotiffs_to_idrisi,
+    generate_idrisi_raster_panel,
     print_raster_status_table,
+    prune_duplicate_geotiff_products,
+    prune_duplicate_idrisi_products,
     submit_change_area_export,
     submit_raster_exports,
     validate_common_grid,
@@ -98,6 +103,14 @@ def _log_folder_summary(label: str, directory: Path, patterns: tuple[str, ...]) 
             seen.update(path for path in directory.glob(pattern) if path.is_file())
         count = len(seen)
     LOGGER.info("%s | folder=%s | files=%s", label, directory, count)
+
+
+def _refresh_idrisi_panel(idrisi_directory: Path, progress: WorkflowProgress) -> Path | None:
+    """Generate the local IDRISI map panel when raster files are available."""
+    panel_path = generate_idrisi_raster_panel(idrisi_directory)
+    if panel_path is not None:
+        progress.update("IDRISI panel", "Ready", str(panel_path))
+    return panel_path
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -167,6 +180,11 @@ def parse_arguments() -> argparse.Namespace:
         action="store_true",
         help="Download raster exports from Drive if they exist; submit Earth Engine exports if they do not.",
     )
+    parser.add_argument(
+        "--generate-idrisi-panel",
+        action="store_true",
+        help="Generate one PNG panel with all local IDRISI rasters.",
+    )
     parser.add_argument("--verbose", action="store_true", help="Enable detailed logging.")
     args = parser.parse_args()
     if not any((
@@ -179,6 +197,7 @@ def parse_arguments() -> argparse.Namespace:
         args.analyze,
         args.auth_only,
         args.audit_only,
+        args.generate_idrisi_panel,
     )):
         args.download_exports = True
         args.sync_rasters = True
@@ -200,6 +219,7 @@ def main() -> None:
     prepared_inputs = None
     organized_data = None
     products = None
+    earth_engine_initialized = False
 
     validate_verra_class_mappings()
 
@@ -285,6 +305,16 @@ def main() -> None:
         state_path,
         audit_path,
     )
+
+    if args.generate_idrisi_panel and not any(
+        (args.submit_exports, args.download_exports, args.submit_rasters, args.submit_change_areas, args.download_rasters, args.sync_rasters, args.analyze)
+    ):
+        panel_path = generate_idrisi_raster_panel(idrisi_directory)
+        if panel_path is None:
+            LOGGER.warning("No IDRISI rasters were available for panel generation in %s.", idrisi_directory)
+        else:
+            progress.update("IDRISI panel", "Ready", str(panel_path))
+        return
     progress.update(
         "Audit",
         "Ready",
@@ -300,8 +330,9 @@ def main() -> None:
         )
         return
 
-    if args.submit_exports or args.submit_rasters or args.submit_change_areas:
+    if args.submit_exports or args.submit_change_areas:
         initialize_earth_engine(raw_settings["earth_engine"]["project"], credentials=credentials)
+        earth_engine_initialized = True
         progress.update("Earth Engine", "Initialized", "Earth Engine project initialized")
         LOGGER.info("1. Data preparation")
         prepared_inputs = prepare_input_data(raw_settings)
@@ -339,22 +370,6 @@ def main() -> None:
             progress.update("Earth Engine", "Waiting", "CSV exports")
             wait_for_tasks(tasks)
             progress.update("Earth Engine", "Ready", "CSV exports completed")
-        if args.submit_rasters:
-            progress.update("Earth Engine", "Submitting", "Raster exports")
-            LOGGER.info("3. Data analysis: submitting aligned Earth Engine raster exports")
-            ensure_drive_raster_folder(drive_service, raw_settings)
-            tasks = submit_raster_exports(
-                settings=raw_settings,
-                products=products,
-                area_of_interest=prepared_inputs.area_of_interest,
-            )
-            if args.no_wait:
-                progress.update("Earth Engine", "Queued", "Raster exports submitted")
-                LOGGER.info("Raster exports submitted. Wait for Earth Engine completion before download.")
-            else:
-                progress.update("Earth Engine", "Waiting", "Raster exports")
-                wait_for_raster_tasks(tasks)
-                progress.update("Earth Engine", "Ready", "Raster exports completed")
         if args.submit_change_areas:
             progress.update("Earth Engine", "Submitting", "Change-area export")
             LOGGER.info("3. Data analysis: submitting forest-to-nonforest change-area export")
@@ -367,6 +382,63 @@ def main() -> None:
                 progress.update("Earth Engine", "Waiting", "Change-area export")
                 wait_for_tasks([task])
                 progress.update("Earth Engine", "Ready", "Change-area export completed")
+
+    if args.submit_rasters:
+        if drive_service is None:
+            raise RuntimeError("Google Drive service was not initialized.")
+        prune_duplicate_geotiff_products(geotiff_tile_directory, "GeoTIFF tile")
+        prune_duplicate_geotiff_products(geotiff_directory, "GeoTIFF mosaic")
+        local_keys = _local_raster_semantic_keys(geotiff_directory) | _local_raster_semantic_keys(geotiff_tile_directory)
+        progress.update("Raster submit", "Drive", "Checking existing raster TIFFs")
+        remote_keys = drive_raster_semantic_keys(drive_service, raw_settings)
+        required_keys = _required_raster_semantic_keys(expected_rasters)
+        missing_required = required_keys - local_keys - remote_keys
+        if not missing_required:
+            progress.update("Raster submit", "Ready", "All required raster TIFFs exist locally or in Drive")
+            LOGGER.info(
+                "Raster submit: all required raster products already exist locally or in Drive. "
+                "Skipping Earth Engine initialization and export submission."
+            )
+        else:
+            if not earth_engine_initialized:
+                initialize_earth_engine(raw_settings["earth_engine"]["project"], credentials=credentials)
+                earth_engine_initialized = True
+                progress.update("Earth Engine", "Initialized", "Preparing missing raster exports")
+            if prepared_inputs is None:
+                prepared_inputs = prepare_input_data(raw_settings)
+            if organized_data is None:
+                organized_data = clean_and_organize_data(
+                    settings=raw_settings,
+                    scenarios=project_settings.scenarios,
+                    mapbiomas_image=prepared_inputs.mapbiomas_image,
+                    area_of_interest=prepared_inputs.area_of_interest,
+                )
+            if products is None:
+                products = build_raster_products(raw_settings, project_settings.scenarios, prepared_inputs, organized_data)
+            products_to_submit = _products_missing_local_or_drive_mosaics(
+                products,
+                geotiff_directory,
+                remote_keys | _local_raster_semantic_keys(geotiff_tile_directory),
+            )
+            if len(products_to_submit) < len(products):
+                LOGGER.info(
+                    "Raster submit: %d product(s) already have an equivalent local or Drive GeoTIFF; skipping those.",
+                    len(products) - len(products_to_submit),
+                )
+            progress.update("Earth Engine", "Submitting", f"{len(products_to_submit)} raster export(s)")
+            ensure_drive_raster_folder(drive_service, raw_settings)
+            tasks = submit_raster_exports(
+                settings=raw_settings,
+                products=products_to_submit,
+                area_of_interest=prepared_inputs.area_of_interest,
+            )
+            if args.no_wait:
+                progress.update("Earth Engine", "Queued", "Raster exports submitted")
+                LOGGER.info("Raster exports submitted. Wait for Earth Engine completion before download.")
+            else:
+                progress.update("Earth Engine", "Waiting", "Raster exports")
+                wait_for_raster_tasks(tasks)
+                progress.update("Earth Engine", "Ready", "Raster exports completed")
 
     if args.download_exports:
         if drive_service is None:
@@ -435,10 +507,14 @@ def main() -> None:
             geotiff_directory,
             len(converted),
         )
+        _refresh_idrisi_panel(idrisi_directory, progress)
 
     if args.sync_rasters:
         if drive_service is None:
             raise RuntimeError("Google Drive service was not initialized.")
+        prune_duplicate_geotiff_products(geotiff_tile_directory, "GeoTIFF tile")
+        prune_duplicate_geotiff_products(geotiff_directory, "GeoTIFF mosaic")
+        prune_duplicate_idrisi_products(idrisi_directory)
         local_tiles = _local_geotiffs(geotiff_tile_directory)
         local_mosaics = _local_geotiffs(geotiff_directory)
         missing_products = _missing_expected_rasters(local_mosaics, project_settings.scenarios)
@@ -454,6 +530,7 @@ def main() -> None:
             progress.update("IDRISI conversion", "Ready", f"{len(converted)} raster(s) converted during this run")
             if converted:
                 LOGGER.info("Converted %d GeoTIFF(s) to IDRISI format in %s.", len(converted), idrisi_directory)
+            _refresh_idrisi_panel(idrisi_directory, progress)
             audit, _state_path, _audit_path = _refresh_pipeline_audit(
                 project_settings,
                 expected_csvs,
@@ -509,6 +586,7 @@ def main() -> None:
                     geotiff_directory,
                     len(converted),
                 )
+                _refresh_idrisi_panel(idrisi_directory, progress)
                 missing_products = _missing_expected_rasters(mosaics, project_settings.scenarios)
             if not local_tiles or missing_products:
                 if not local_tiles:
@@ -523,54 +601,69 @@ def main() -> None:
                         "; ".join(missing_products),
                     )
                 ensure_drive_raster_folder(drive_service, raw_settings)
-                initialize_earth_engine(raw_settings["earth_engine"]["project"], credentials=credentials)
-                progress.update("Earth Engine", "Initialized", "Preparing missing rasters")
-                if prepared_inputs is None:
-                    prepared_inputs = prepare_input_data(raw_settings)
-                if organized_data is None:
-                    organized_data = clean_and_organize_data(
+                remote_keys = drive_raster_semantic_keys(drive_service, raw_settings)
+                available_keys = _local_raster_semantic_keys(geotiff_directory) | _local_raster_semantic_keys(geotiff_tile_directory) | remote_keys
+                required_keys = _required_raster_semantic_keys(expected_rasters)
+                if required_keys.issubset(available_keys):
+                    progress.update("Sync rasters", "Ready", "Required raster TIFFs exist locally or in Drive")
+                    LOGGER.info(
+                        "Sync rasters: required raster products exist locally or in Drive after the Drive check. "
+                        "Skipping Earth Engine initialization and export submission."
+                    )
+                else:
+                    initialize_earth_engine(raw_settings["earth_engine"]["project"], credentials=credentials)
+                    earth_engine_initialized = True
+                    progress.update("Earth Engine", "Initialized", "Preparing missing rasters")
+                    if prepared_inputs is None:
+                        prepared_inputs = prepare_input_data(raw_settings)
+                    if organized_data is None:
+                        organized_data = clean_and_organize_data(
+                            settings=raw_settings,
+                            scenarios=project_settings.scenarios,
+                            mapbiomas_image=prepared_inputs.mapbiomas_image,
+                            area_of_interest=prepared_inputs.area_of_interest,
+                        )
+                    if products is None:
+                        products = build_raster_products(raw_settings, project_settings.scenarios, prepared_inputs, organized_data)
+                    products_to_submit = _products_missing_local_or_drive_mosaics(
+                        products,
+                        geotiff_directory,
+                        remote_keys | _local_raster_semantic_keys(geotiff_tile_directory),
+                    )
+                    if len(products_to_submit) < len(products):
+                        LOGGER.info(
+                            "Sync rasters: %d product(s) already have a local or Drive GeoTIFF; not calling Earth Engine for those.",
+                            len(products) - len(products_to_submit),
+                        )
+                    tasks = submit_raster_exports(
                         settings=raw_settings,
-                        scenarios=project_settings.scenarios,
-                        mapbiomas_image=prepared_inputs.mapbiomas_image,
+                        products=products_to_submit,
                         area_of_interest=prepared_inputs.area_of_interest,
                     )
-                if products is None:
-                    products = build_raster_products(raw_settings, project_settings.scenarios, prepared_inputs, organized_data)
-                products_to_submit = [
-                    product for product in products if not (geotiff_directory / f"{product.name}.tif").exists()
-                ]
-                if len(products_to_submit) < len(products):
+                    progress.update("Earth Engine", "Queued", f"{len(tasks)} raster export task(s)")
                     LOGGER.info(
-                        "Sync rasters: %d product(s) already have a local GeoTIFF mosaic; not calling Earth Engine for those.",
-                        len(products) - len(products_to_submit),
+                        "Submitted %d raster export tasks. Re-run once Earth Engine completes to download and convert to IDRISI.",
+                        len(tasks),
                     )
-                tasks = submit_raster_exports(
+
+        if earth_engine_initialized:
+            progress.update("Earth Engine", "Initialized", "Updating the raster status table")
+            if prepared_inputs is None:
+                prepared_inputs = prepare_input_data(raw_settings)
+            if organized_data is None:
+                organized_data = clean_and_organize_data(
                     settings=raw_settings,
-                    products=products_to_submit,
+                    scenarios=project_settings.scenarios,
+                    mapbiomas_image=prepared_inputs.mapbiomas_image,
                     area_of_interest=prepared_inputs.area_of_interest,
                 )
-                progress.update("Earth Engine", "Queued", f"{len(tasks)} raster export task(s)")
-                LOGGER.info(
-                    "Submitted %d raster export tasks. Re-run once Earth Engine completes to download and convert to IDRISI.",
-                    len(tasks),
-                )
-
-        initialize_earth_engine(raw_settings["earth_engine"]["project"], credentials=credentials)
-        progress.update("Earth Engine", "Initialized", "Updating the raster status table")
-        if prepared_inputs is None:
-            prepared_inputs = prepare_input_data(raw_settings)
-        if organized_data is None:
-            organized_data = clean_and_organize_data(
-                settings=raw_settings,
-                scenarios=project_settings.scenarios,
-                mapbiomas_image=prepared_inputs.mapbiomas_image,
-                area_of_interest=prepared_inputs.area_of_interest,
-            )
-        if products is None:
-            products = build_raster_products(raw_settings, project_settings.scenarios, prepared_inputs, organized_data)
-        status_table = build_raster_status_table(products, geotiff_directory, idrisi_directory, raster_root)
-        print_raster_status_table(status_table)
-        progress.update("Sync rasters", "Status", f"{len(status_table)} product(s) in the raster status table")
+            if products is None:
+                products = build_raster_products(raw_settings, project_settings.scenarios, prepared_inputs, organized_data)
+            status_table = build_raster_status_table(products, geotiff_directory, idrisi_directory, raster_root)
+            print_raster_status_table(status_table)
+            progress.update("Sync rasters", "Status", f"{len(status_table)} product(s) in the raster status table")
+        else:
+            progress.update("Sync rasters", "Ready", "Skipped Earth Engine status table; raster TIFFs already exist")
 
     if args.analyze:
         progress.update("Local analysis", "Running", "Computing final tables")
@@ -595,6 +688,7 @@ def main() -> None:
             progress.update("IDRISI conversion", "Ready", f"{len(converted)} raster(s) converted during this run")
             if converted:
                 LOGGER.info("Converted %d GeoTIFF(s) to IDRISI format in %s.", len(converted), idrisi_directory)
+            _refresh_idrisi_panel(idrisi_directory, progress)
         results = analyze_exported_tables(
             table_directory=table_directory,
             scenario_labels=scenario_labels,
@@ -621,10 +715,9 @@ def main() -> None:
             )
             LOGGER.info("Google Sheets tables: https://docs.google.com/spreadsheets/d/%s/edit", spreadsheet_id)
         generated_figures = generate_report_figures(results, project_settings.output_directories["figures"])
-        if credentials is not None:
+        if credentials is not None and earth_engine_initialized:
             if prepared_inputs is None or organized_data is None:
                 try:
-                    initialize_earth_engine(raw_settings["earth_engine"]["project"], credentials=credentials)
                     prepared_inputs = prepare_input_data(raw_settings)
                     organized_data = clean_and_organize_data(
                         settings=raw_settings,
@@ -652,18 +745,18 @@ def main() -> None:
                 except Exception:
                     LOGGER.exception("Could not generate Earth Engine report maps.")
                     figures_failed += 1
-                try:
-                    change_figure = generate_change_area_figure(
-                        table_directory=table_directory,
-                        figure_directory=project_settings.output_directories["figures"],
-                    )
-                    figures_attempted += 1
-                    if change_figure is not None:
-                        generated_figures.append(change_figure)
-                except Exception:
-                    LOGGER.exception("Could not generate change area figure.")
-                    figures_failed += 1
             LOGGER.info("Earth Engine map generation: %d attempted, %d failed.", figures_attempted, figures_failed)
+        elif credentials is not None:
+            LOGGER.info("Skipping Earth Engine report maps because GEE was not needed earlier in this run.")
+        try:
+            change_figure = generate_change_area_figure(
+                table_directory=table_directory,
+                figure_directory=project_settings.output_directories["figures"],
+            )
+            if change_figure is not None:
+                generated_figures.append(change_figure)
+        except Exception:
+            LOGGER.exception("Could not generate change area figure.")
         LOGGER.info("Generated %d report figures and maps.", len(generated_figures))
         presentation_path = build_powerpoint_presentation(
             table_directory=project_settings.output_directories["tables"],
@@ -719,15 +812,43 @@ def _missing_expected_rasters(local_mosaics: list[Path], scenarios: list) -> lis
     stale or partial local cache is most likely to be missing silently.
     """
     stems = {path.stem for path in local_mosaics}
+    semantic_keys = {raster_semantic_key(stem) for stem in stems}
     missing: list[str] = []
     for year in PRIMARY_MAPBIOMAS_YEARS:
-        if not any("LULC" in stem and str(year) in stem for stem in stems):
+        if f"mb_lulc_{year}" not in semantic_keys:
             missing.append(f"MapBiomas LULC {year} (30 m, all classes)")
     for scenario in scenarios:
-        marker = f"Persistence_Scen{scenario.identifier}"
-        if not any(marker in stem for stem in stems):
+        marker = f"Persistence_Scen{scenario.label}"
+        expected_key = raster_semantic_key(f"UDefA_MB_{marker}")
+        if expected_key not in semantic_keys:
             missing.append(f"Persistence scenario {scenario.label}")
     return missing
+
+
+def _products_missing_local_mosaics(products, geotiff_directory: Path):
+    if not geotiff_directory.exists():
+        return list(products)
+    ready_keys = _local_raster_semantic_keys(geotiff_directory)
+    return [product for product in products if raster_semantic_key(product.name) not in ready_keys]
+
+
+def _products_missing_local_or_drive_mosaics(products, geotiff_directory: Path, drive_keys: set[str]):
+    ready_keys = _local_raster_semantic_keys(geotiff_directory) | set(drive_keys)
+    return [product for product in products if raster_semantic_key(product.name) not in ready_keys]
+
+
+def _local_raster_semantic_keys(directory: Path) -> set[str]:
+    if not directory.exists():
+        return set()
+    return {
+        raster_semantic_key(path.stem)
+        for path in directory.iterdir()
+        if path.is_file() and path.suffix.lower() in {".tif", ".tiff"}
+    }
+
+
+def _required_raster_semantic_keys(expected_rasters) -> set[str]:
+    return {raster_semantic_key(spec.name) for spec in expected_rasters if spec.required}
 
 
 def _refresh_pipeline_audit(

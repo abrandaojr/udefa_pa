@@ -164,14 +164,19 @@ def expected_raster_products(settings: dict[str, Any], scenarios: list[Scenario]
 
     for start_year, end_year in zip(PRIMARY_MAPBIOMAS_YEARS, PRIMARY_MAPBIOMAS_YEARS[1:]):
         period = _PERIOD_LABEL.get((start_year, end_year), f"{start_year}_{end_year}")
+        specs.append(
+            ProductSpec(
+                name=_with_projection_suffix(f"UDefA_MB_ForestChange4_{period}", settings),
+                kind="raster",
+                required=False,
+                description=f"MapBiomas 4-class forest change, {start_year}-{end_year}",
+            )
+        )
+
+    for start_year, end_year in zip(CROSS_TABULATION_YEARS, CROSS_TABULATION_YEARS[1:]):
+        period = _PERIOD_LABEL.get((start_year, end_year), f"{start_year}_{end_year}")
         specs.extend(
             [
-                ProductSpec(
-                    name=_with_projection_suffix(f"UDefA_MB_ForestChange4_{period}", settings),
-                    kind="raster",
-                    required=False,
-                    description=f"MapBiomas 4-class forest change, {start_year}-{end_year}",
-                ),
                 ProductSpec(
                     name=_with_projection_suffix(f"UDefA_Ct_ForestChange4_{period}", settings),
                     kind="raster",

@@ -322,7 +322,6 @@ def _select_report_images(figure_directory: Path) -> list[Path]:
         "Map_Agreement_Change_2009_2013.png",
         "Map_Agreement_Change_2013_2018.png",
         "Map_Change_ForestToNonForest_MapBiomas_1985_2024.png",
-        "Map_Change_ForestToNonForest_CTrees_DMJSS.png",
         "Map_Change_ForestToNonForest_CTrees_FCBM4.png",
         "Map_Change_ForestToNonForest_CTrees_FCBM1_2009_to_FCBM2_2013.png",
         "Map_Change_ForestToNonForest_CTrees_FCBM2_2013_to_FCBM3_2018.png",
