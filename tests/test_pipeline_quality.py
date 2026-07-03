@@ -490,15 +490,15 @@ class PipelineQualityTests(unittest.TestCase):
                     dataset.write(data, 1)
             convert_geotiffs_to_idrisi(geotiff_dir, idrisi_dir)
 
-            panel = generate_idrisi_raster_panel(idrisi_dir, columns=2, thumbnail_size=(80, 60))
+            panel = generate_idrisi_raster_panel(idrisi_dir, columns=2, thumbnail_size=(80, 60), panel_size=(1600, 900))
 
             self.assertEqual(panel, idrisi_dir / "idrisi_maps_panel.png")
             self.assertTrue(panel.exists())
             from PIL import Image
 
             with Image.open(panel) as image:
-                self.assertGreater(image.width, 100)
-                self.assertGreater(image.height, 100)
+                self.assertEqual(image.size, (1600, 900))
+                self.assertAlmostEqual(image.width / image.height, 16 / 9, places=3)
 
     def test_idrisi_product_type_groups_equivalent_raster_names(self) -> None:
         examples = {

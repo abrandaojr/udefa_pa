@@ -729,8 +729,10 @@ def ensure_idrisi_palettes(directory: Path) -> list[Path]:
 def generate_idrisi_raster_panel(
     idrisi_directory: Path,
     output_path: Path | None = None,
-    columns: int = 4,
+    columns: int | None = None,
     thumbnail_size: tuple[int, int] = (420, 360),
+    panel_size: tuple[int, int] = (4000, 2250),
+    dpi: tuple[int, int] = (300, 300),
 ) -> Path | None:
     """Render all local IDRISI rasters into one PNG panel inside the IDRISI folder."""
     if not idrisi_directory.exists():
@@ -742,26 +744,31 @@ def generate_idrisi_raster_panel(
     from PIL import Image, ImageDraw, ImageFont
 
     output_path = output_path or (idrisi_directory / "idrisi_maps_panel.png")
-    columns = max(1, int(columns))
+    panel_width, panel_height = panel_size
+    if panel_width <= 0 or panel_height <= 0:
+        raise ValueError("panel_size must contain positive width and height values")
+
+    columns = _idrisi_panel_columns(len(rst_paths), panel_size) if columns is None else max(1, int(columns))
     rows = math.ceil(len(rst_paths) / columns)
-    thumb_width, thumb_height = thumbnail_size
-    title_height = 78
-    cell_title_height = 54
-    gap = 22
-    margin = 32
-    cell_width = thumb_width
-    cell_height = cell_title_height + thumb_height
-    panel_width = margin * 2 + columns * cell_width + (columns - 1) * gap
-    panel_height = margin * 2 + title_height + rows * cell_height + (rows - 1) * gap
+    title_height = max(74, round(panel_height * 0.052))
+    cell_title_height = max(32, round(panel_height * 0.022))
+    gap = max(12, round(panel_width * 0.006))
+    margin = max(30, round(panel_width * 0.012))
+    grid_width = panel_width - margin * 2 - (columns - 1) * gap
+    grid_height = panel_height - margin * 2 - title_height - (rows - 1) * gap
+    cell_width = max(1, grid_width // columns)
+    cell_height = max(1, grid_height // rows)
+    thumb_width = max(1, min(int(thumbnail_size[0]), cell_width))
+    thumb_height = max(1, min(int(thumbnail_size[1]), cell_height - cell_title_height))
 
     panel = Image.new("RGB", (panel_width, panel_height), "white")
     draw = ImageDraw.Draw(panel)
-    title_font = _pil_font(ImageFont, 34, bold=True)
-    cell_font = _pil_font(ImageFont, 15, bold=True)
-    small_font = _pil_font(ImageFont, 12, bold=False)
+    title_font = _pil_font(ImageFont, max(28, min(46, panel_width // 92)), bold=True)
+    cell_font = _pil_font(ImageFont, max(10, min(16, panel_width // 250)), bold=True)
+    small_font = _pil_font(ImageFont, max(9, min(13, panel_width // 310)), bold=False)
     title = f"IDRISI Raster Map Panel ({len(rst_paths)} maps)"
-    draw.text((margin, 24), title, fill=(116, 0, 0), font=title_font)
-    draw.text((margin, 58), str(idrisi_directory), fill=(70, 70, 70), font=small_font)
+    draw.text((margin, max(14, margin // 2)), title, fill=(116, 0, 0), font=title_font)
+    draw.text((margin, max(52, margin // 2 + 38)), str(idrisi_directory), fill=(70, 70, 70), font=small_font)
     study_area_mask = _study_area_mask_idrisi(idrisi_directory)
 
     for index, rst_path in enumerate(rst_paths):
@@ -770,21 +777,31 @@ def generate_idrisi_raster_panel(
         y = margin + title_height + row * (cell_height + gap)
         metadata = _read_idrisi_rdc(rst_path.with_suffix(".rdc"))
         mask_path = None if study_area_mask is not None and study_area_mask.resolve() == rst_path.resolve() else study_area_mask
-        image = _render_idrisi_thumbnail(rst_path, metadata, thumbnail_size, mask_path)
+        image = _render_idrisi_thumbnail(rst_path, metadata, (thumb_width, thumb_height), mask_path)
         label = metadata.get("file title") or _idrisi_title(rst_path.stem)
         draw.rounded_rectangle(
-            (x - 8, y - 8, x + cell_width + 8, y + cell_height + 8),
+            (x - 6, y - 6, x + cell_width + 6, y + cell_height + 6),
             radius=6,
             outline=(210, 210, 210),
             fill=(248, 248, 248),
         )
         _draw_wrapped_text(draw, label, (x, y), cell_width, cell_font, fill=(116, 0, 0), max_lines=2)
-        panel.paste(image, (x, y + cell_title_height))
+        image_x = x + (cell_width - image.width) // 2
+        image_y = y + cell_title_height + max(0, (cell_height - cell_title_height - image.height) // 2)
+        panel.paste(image, (image_x, image_y))
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    panel.save(output_path)
+    panel.save(output_path, dpi=dpi)
     LOGGER.info("Generated IDRISI raster panel: %s", output_path)
     return output_path
+
+
+def _idrisi_panel_columns(map_count: int, panel_size: tuple[int, int]) -> int:
+    if map_count <= 0:
+        return 1
+    width, height = panel_size
+    aspect = max(width / max(height, 1), 1.0)
+    return max(1, min(map_count, math.ceil(math.sqrt(map_count * aspect))))
 
 
 def convert_geotiffs_to_idrisi(geotiff_directory: Path, idrisi_directory: Path) -> list[Path]:
