@@ -178,7 +178,7 @@ python main.py --download-rasters
 
 Downloaded Earth Engine GeoTIFF tiles are saved to `outputs/rasters/geotiff_tiles`. Local mosaic GeoTIFFs are saved to `outputs/rasters/geotiff`, IDRISI `.rst/.rdc` files are saved to `outputs/rasters/idrisi`, and `outputs/rasters/raster_grid_inventory.csv` records the row/column count, CRS, affine transform, and 30 m pixel size for grid checks.
 
-The IDRISI conversion also refreshes palette sidecars and writes a combined 16:9 map panel at `outputs/rasters/idrisi/idrisi_maps_panel.png`. The PNG is generated at 4000 x 2250 px / 300 dpi so it fits a 13.33 x 7.5 in widescreen slide. When a local `Valid_Analysis_Mask` raster is available, pixels outside the Para study area are written as IDRISI missing data and rendered black, while valid in-area classes keep their semantic colors. To regenerate only that panel from existing local `.rst` files:
+The IDRISI conversion also refreshes palette sidecars and writes a combined 16:9 map panel at `outputs/rasters/idrisi/idrisi_maps_panel.png`. The PNG is generated at 4000 x 2250 px / 300 dpi so it fits a 13.33 x 7.5 in widescreen slide. When a local `UDefA_ParaStateMask` raster is available, every pixel outside the state of Para is written as IDRISI missing data and rendered black; `Valid_Analysis_Mask` is used only as a fallback for older local outputs. To regenerate only that panel from existing local `.rst` files:
 
 ```bash
 python main.py --generate-idrisi-panel

@@ -35,6 +35,8 @@ from src.mapbiomas_ctrees.raster_exports import (
     _idrisi_product_type,
     _normalize_raster_products,
     _study_area_boundary,
+    _study_area_mask_geotiff,
+    _study_area_mask_idrisi,
     build_geotiff_mosaics,
     build_raster_status_table,
     convert_geotiffs_to_idrisi,
@@ -56,6 +58,7 @@ class PipelineQualityTests(unittest.TestCase):
         self.assertIn("XTab_30m_A_100pct_1985-2024_x_DMJSS", {item.name for item in csvs})
         self.assertIn("UDefA_MB_LULC_T0_1985_EPSG_5880_30m", {item.name for item in rasters})
         self.assertIn("UDefA_MB_Persistence_ScenA_100pct_1985-2024_EPSG_5880_30m", {item.name for item in rasters})
+        self.assertIn("UDefA_ParaStateMask_EPSG_5880_30m", {item.name for item in rasters})
 
     def test_catalog_does_not_expect_ctrees_agreement_without_ctrees_2024(self) -> None:
         scenarios = [Scenario("A", 100, 1985, 2024)]
@@ -320,6 +323,37 @@ class PipelineQualityTests(unittest.TestCase):
             self.assertTrue(np.array_equal(values, np.array([[1, _IDRISI_NODATA], [0, _IDRISI_NODATA]], dtype=np.int16)))
             rdc = (idrisi_dir / "Tiny_Test_EPSG_5880_30m.rdc").read_text(encoding="ascii")
             self.assertIn("Outside study area set to missing data", rdc)
+
+    def test_idrisi_conversion_prioritizes_para_state_mask_over_valid_mask(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            geotiff_dir = root / "geotiff"
+            idrisi_dir = root / "idrisi"
+            geotiff_dir.mkdir()
+            idrisi_dir.mkdir()
+            transform = from_origin(0, 60, 30, 30)
+            for name, data in {
+                "UDefA_ValidMask_EPSG_5880_30m": np.array([[0, 0], [0, 0]], dtype=np.int16),
+                "UDefA_ParaStateMask_EPSG_5880_30m": np.array([[1, 0], [1, 1]], dtype=np.int16),
+            }.items():
+                with rasterio.open(
+                    geotiff_dir / f"{name}.tif",
+                    "w",
+                    driver="GTiff",
+                    height=2,
+                    width=2,
+                    count=1,
+                    dtype="int16",
+                    crs="EPSG:5880",
+                    transform=transform,
+                    nodata=_IDRISI_NODATA,
+                ) as dataset:
+                    dataset.write(data, 1)
+                (idrisi_dir / f"{name}.rst").write_bytes(b"rst")
+                (idrisi_dir / f"{name}.rdc").write_text("columns : 2\nrows    : 2\n", encoding="ascii")
+
+            self.assertEqual(_study_area_mask_geotiff(geotiff_dir).name, "UDefA_ParaStateMask_EPSG_5880_30m.tif")
+            self.assertEqual(_study_area_mask_idrisi(idrisi_dir).name, "UDefA_ParaStateMask_EPSG_5880_30m.rst")
 
     def test_idrisi_conversion_writes_mapbiomas_lulc_palette(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -126,6 +126,12 @@ def expected_raster_products(settings: dict[str, Any], scenarios: list[Scenario]
     """Return raster products whose names can be known without EE images."""
     specs: list[ProductSpec] = [
         ProductSpec(
+            name=_with_projection_suffix("UDefA_ParaStateMask", settings),
+            kind="raster",
+            required=False,
+            description="Para state mask",
+        ),
+        ProductSpec(
             name=_with_projection_suffix("UDefA_ValidMask", settings),
             kind="raster",
             required=False,

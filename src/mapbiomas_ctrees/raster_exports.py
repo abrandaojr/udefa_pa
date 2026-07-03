@@ -228,8 +228,10 @@ def build_raster_products(
     organized: OrganizedData,
 ) -> list[RasterProduct]:
     """Build all rasters that should be inspectable outside Earth Engine."""
+    state_mask = ee.Image.constant(1).clip(prepared.area_of_interest).toByte().rename("value")
     valid_mask = organized.valid_analysis_mask.toByte().rename("value")
     products = [
+        RasterProduct("UDefA_ParaStateMask", state_mask, "Para state mask"),
         RasterProduct("UDefA_ValidMask", valid_mask, "Valid analysis area mask"),
     ]
 
@@ -352,10 +354,21 @@ def _normalize_raster_products(
             continue
         seen.add(name)
         image = product.image
-        if valid_mask is not None and image is not None:
+        if valid_mask is not None and image is not None and _should_apply_valid_analysis_mask(name):
             image = image.updateMask(valid_mask)
         normalized.append(RasterProduct(name=name, image=image, description=product.description))
     return normalized
+
+
+def _should_apply_valid_analysis_mask(product_name: str) -> bool:
+    lower = product_name.lower()
+    return not (
+        "validmask" in lower
+        or "valid_analysis_mask" in lower
+        or "parastatemask" in lower
+        or "para_state_mask" in lower
+        or "state_mask" in lower
+    )
 
 
 def write_change_area_tables(
@@ -933,7 +946,14 @@ def _iter_target_geotiff_files(directory: Path) -> list[Path]:
 
 def _study_area_mask_geotiff(geotiff_directory: Path) -> Path | None:
     candidates: list[Path] = []
-    for pattern in ("UDefA_ValidMask*.tif", "Valid_Analysis_Mask*.tif", "*Valid*Mask*.tif"):
+    for pattern in (
+        "UDefA_ParaStateMask*.tif",
+        "*Para*State*Mask*.tif",
+        "*State*Mask*.tif",
+        "UDefA_ValidMask*.tif",
+        "Valid_Analysis_Mask*.tif",
+        "*Valid*Mask*.tif",
+    ):
         candidates.extend(sorted(geotiff_directory.glob(pattern)))
     for path in candidates:
         if path.is_file() and _is_target_geotiff(path):
@@ -943,7 +963,14 @@ def _study_area_mask_geotiff(geotiff_directory: Path) -> Path | None:
 
 def _study_area_mask_idrisi(idrisi_directory: Path) -> Path | None:
     candidates: list[Path] = []
-    for pattern in ("UDefA_ValidMask*.rst", "Valid_Analysis_Mask*.rst", "*Valid*Mask*.rst"):
+    for pattern in (
+        "UDefA_ParaStateMask*.rst",
+        "*Para*State*Mask*.rst",
+        "*State*Mask*.rst",
+        "UDefA_ValidMask*.rst",
+        "Valid_Analysis_Mask*.rst",
+        "*Valid*Mask*.rst",
+    ):
         candidates.extend(sorted(idrisi_directory.glob(pattern)))
     for path in candidates:
         if path.is_file() and path.with_suffix(".rdc").exists():
@@ -1547,6 +1574,10 @@ _IDRISI_LEGENDS: dict[str, list[tuple[int, str, str]]] = {
         (0, "Outside Analysis Area", _IDRISI_NO_DATA_COLOR),
         (1, "Valid Analysis Area", _IDRISI_FOREST_COLOR),
     ],
+    "state_mask": [
+        (0, "Outside Para State", _IDRISI_NO_DATA_COLOR),
+        (1, "Para State", _IDRISI_FOREST_COLOR),
+    ],
     "loss_agreement3": [
         (1, "Both Sources Agree (Loss)", _IDRISI_AGREEMENT_COLOR),
         (2, "CTrees Only", _IDRISI_CTREES_ONLY_COLOR),
@@ -1613,6 +1644,8 @@ def _idrisi_product_type(stem: str) -> str:
         return "fcbm_index8"
     if "mapbiomas_change_" in s or ("change" in s and any(x in s for x in ["stab", "loss", "gain"])):
         return "change4"
+    if "parastatemask" in s or "para_state_mask" in s or "state_mask" in s:
+        return "state_mask"
     if "valid" in s or "mask" in s:
         return "valid_mask"
     if "dmjss" in s:

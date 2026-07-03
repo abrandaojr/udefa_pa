@@ -61,6 +61,8 @@ def raster_semantic_key(name: str | Path) -> str:
     core = strip_raster_grid_suffix(str(name))
     lower = core.lower()
 
+    if lower in {"udefa_parastatemask", "para_state_mask", "parastatemask"}:
+        return "state_mask"
     if lower in {"valid_analysis_mask", "udefa_validmask"}:
         return "valid_mask"
 
@@ -260,6 +262,7 @@ def _raster_name_sort_key(stem: str) -> tuple[int, int, int, str]:
             lower.startswith("udefa_mb_")
             or lower.startswith("udefa_ct_")
             or lower.startswith("udefa_validmask")
+            or lower.startswith("udefa_parastatemask")
         )
     )
     legacy_projection_order = int("_30m_epsg_" in stem.lower())
@@ -271,6 +274,7 @@ def _raster_name_sort_key(stem: str) -> tuple[int, int, int, str]:
         or lower.startswith("change_foresttononforest_")
         or lower.startswith("cross_forestlossagreement_")
         or lower.startswith("valid_analysis_mask")
+        or lower.startswith("para_state_mask")
     )
     return (canonical_prefix, legacy_projection_order, legacy_long_source, stem.lower())
 
