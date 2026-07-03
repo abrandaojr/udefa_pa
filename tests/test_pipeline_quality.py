@@ -33,6 +33,7 @@ from src.mapbiomas_ctrees.raster_exports import (
     _idrisi_smp_bytes,
     _idrisi_title,
     _idrisi_product_type,
+    _idrisi_template_grid,
     _normalize_raster_products,
     _study_area_boundary,
     _study_area_mask_geotiff,
@@ -385,6 +386,55 @@ class PipelineQualityTests(unittest.TestCase):
 
             self.assertEqual(_study_area_mask_geotiff(geotiff_dir).name, "UDefA_ParaStateMask_EPSG_5880_30m.tif")
             self.assertEqual(_study_area_mask_idrisi(idrisi_dir).name, "UDefA_ParaStateMask_EPSG_5880_30m.rst")
+
+    def test_valid_analysis_mask_is_not_used_as_para_state_mask(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            geotiff_dir = root / "geotiff"
+            idrisi_dir = root / "idrisi"
+            geotiff_dir.mkdir()
+            idrisi_dir.mkdir()
+            with rasterio.open(
+                geotiff_dir / "UDefA_ValidMask_EPSG_5880_30m.tif",
+                "w",
+                driver="GTiff",
+                height=1,
+                width=1,
+                count=1,
+                dtype="int16",
+                crs="EPSG:5880",
+                transform=from_origin(0, 30, 30, 30),
+                nodata=_IDRISI_NODATA,
+            ) as dataset:
+                dataset.write(np.array([[1]], dtype=np.int16), 1)
+            (idrisi_dir / "UDefA_ValidMask_EPSG_5880_30m.rst").write_bytes(b"rst")
+            (idrisi_dir / "UDefA_ValidMask_EPSG_5880_30m.rdc").write_text("columns : 1\nrows    : 1\n", encoding="ascii")
+
+            self.assertIsNone(_study_area_mask_geotiff(geotiff_dir))
+            self.assertIsNone(_study_area_mask_idrisi(idrisi_dir))
+
+    def test_idrisi_template_grid_uses_local_rdc_extent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            idrisi_dir = Path(tmp)
+            (idrisi_dir / "MapBiomas_ForestLoss_2009_2013_EPSG_5880_30m.rdc").write_text(
+                "\n".join(
+                    [
+                        "columns     : 2",
+                        "rows        : 3",
+                        "min. X      : 100.000",
+                        "max. Y      : 500.000",
+                        "resolution  : 30.00000000",
+                    ]
+                ),
+                encoding="ascii",
+            )
+
+            grid = _idrisi_template_grid(idrisi_dir)
+
+            self.assertIsNotNone(grid)
+            width, height, transform = grid
+            self.assertEqual((width, height), (2, 3))
+            self.assertEqual((transform.c, transform.f, transform.a, transform.e), (100.0, 500.0, 30.0, -30.0))
 
     def test_idrisi_conversion_writes_mapbiomas_lulc_palette(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -167,8 +167,10 @@ import numpy as np
 import pandas as pd
 import rasterio
 from rasterio.crs import CRS
+from rasterio.features import rasterize
 from rasterio.merge import merge
-from rasterio.warp import Resampling, calculate_default_transform, reproject
+from rasterio.transform import from_origin
+from rasterio.warp import Resampling, calculate_default_transform, reproject, transform_geom
 from rasterio.windows import Window
 
 from .constants import (
@@ -749,10 +751,17 @@ def generate_idrisi_raster_panel(
     thumbnail_size: tuple[int, int] = (420, 360),
     panel_size: tuple[int, int] = (4000, 2250),
     dpi: tuple[int, int] = (300, 300),
+    settings: dict[str, Any] | None = None,
+    geotiff_directory: Path | None = None,
+    require_state_mask: bool = False,
 ) -> Path | None:
     """Render all local IDRISI rasters into one PNG panel inside the IDRISI folder."""
     if not idrisi_directory.exists():
         return None
+    if settings is not None:
+        state_mask = ensure_idrisi_para_state_mask(idrisi_directory, settings, geotiff_directory)
+        if require_state_mask and state_mask is None:
+            raise RuntimeError("Could not create the IBGE Para state mask needed for the IDRISI panel.")
     rst_paths = sorted(path for path in idrisi_directory.glob("*.rst") if path.with_suffix(".rdc").exists())
     if not rst_paths:
         return None
@@ -810,6 +819,75 @@ def generate_idrisi_raster_panel(
     panel.save(output_path, dpi=dpi)
     LOGGER.info("Generated IDRISI raster panel: %s", output_path)
     return output_path
+
+
+def ensure_idrisi_para_state_mask(
+    idrisi_directory: Path,
+    settings: dict[str, Any],
+    geotiff_directory: Path | None = None,
+) -> Path | None:
+    """Create a local IDRISI mask from the configured IBGE Para state boundary."""
+    existing = _study_area_mask_idrisi(idrisi_directory)
+    if existing is not None:
+        return existing
+    template = _idrisi_template_grid(idrisi_directory)
+    if template is None:
+        return None
+
+    width, height, transform = template
+    geometry = _ibge_state_geometry(settings)
+    projected_geometry = transform_geom("EPSG:4326", _IDRISI_TARGET_CRS, geometry, precision=3)
+    mask = rasterize(
+        [(projected_geometry, 1)],
+        out_shape=(height, width),
+        transform=transform,
+        fill=0,
+        dtype=np.int16,
+    )
+
+    geotiff_directory = geotiff_directory or (idrisi_directory.parent / "geotiff")
+    geotiff_directory.mkdir(parents=True, exist_ok=True)
+    mask_name = _with_projection_suffix("UDefA_ParaStateMask", settings)
+    geotiff_path = geotiff_directory / f"{mask_name}.tif"
+    with rasterio.open(
+        geotiff_path,
+        "w",
+        driver="GTiff",
+        height=height,
+        width=width,
+        count=1,
+        dtype="int16",
+        crs=_IDRISI_TARGET_CRS,
+        transform=transform,
+        nodata=_IDRISI_NODATA,
+        compress="lzw",
+    ) as dataset:
+        dataset.write(mask, 1)
+
+    return _write_idrisi_pair(geotiff_path, idrisi_directory, None)
+
+
+def _idrisi_template_grid(idrisi_directory: Path) -> tuple[int, int, rasterio.transform.Affine] | None:
+    for rdc_path in sorted(idrisi_directory.glob("*.rdc")):
+        if _idrisi_product_type(rdc_path.stem) in {"state_mask", "valid_mask"}:
+            continue
+        metadata = _read_idrisi_rdc(rdc_path)
+        width = _idrisi_metadata_int(metadata, "columns")
+        height = _idrisi_metadata_int(metadata, "rows")
+        x_min = _idrisi_metadata_float(metadata, "min. x")
+        y_max = _idrisi_metadata_float(metadata, "max. y")
+        resolution = _idrisi_metadata_float(metadata, "resolution", _IDRISI_TARGET_RESOLUTION_M)
+        if width > 0 and height > 0 and resolution > 0:
+            return width, height, from_origin(x_min, y_max, resolution, resolution)
+    return None
+
+
+def _ibge_state_geometry(settings: dict[str, Any]) -> dict[str, Any]:
+    aoi_settings = settings["earth_engine"]["aoi"]
+    feature_collection = ee.FeatureCollection(aoi_settings["states_feature_collection"]).filter(
+        ee.Filter.eq(aoi_settings["state_property"], str(aoi_settings["state_code"]))
+    )
+    return feature_collection.geometry().getInfo()
 
 
 def _idrisi_panel_columns(map_count: int, panel_size: tuple[int, int]) -> int:

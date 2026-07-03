@@ -105,9 +105,19 @@ def _log_folder_summary(label: str, directory: Path, patterns: tuple[str, ...]) 
     LOGGER.info("%s | folder=%s | files=%s", label, directory, count)
 
 
-def _refresh_idrisi_panel(idrisi_directory: Path, progress: WorkflowProgress) -> Path | None:
+def _refresh_idrisi_panel(
+    idrisi_directory: Path,
+    progress: WorkflowProgress,
+    settings: dict | None = None,
+    geotiff_directory: Path | None = None,
+) -> Path | None:
     """Generate the local IDRISI map panel when raster files are available."""
-    panel_path = generate_idrisi_raster_panel(idrisi_directory)
+    panel_path = generate_idrisi_raster_panel(
+        idrisi_directory,
+        settings=settings,
+        geotiff_directory=geotiff_directory,
+        require_state_mask=settings is not None,
+    )
     if panel_path is not None:
         progress.update("IDRISI panel", "Ready", str(panel_path))
     return panel_path
@@ -309,7 +319,14 @@ def main() -> None:
     if args.generate_idrisi_panel and not any(
         (args.submit_exports, args.download_exports, args.submit_rasters, args.submit_change_areas, args.download_rasters, args.sync_rasters, args.analyze)
     ):
-        panel_path = generate_idrisi_raster_panel(idrisi_directory)
+        credentials = load_google_credentials(raw_settings)
+        initialize_earth_engine(raw_settings["earth_engine"]["project"], credentials=credentials)
+        panel_path = generate_idrisi_raster_panel(
+            idrisi_directory,
+            settings=raw_settings,
+            geotiff_directory=geotiff_directory,
+            require_state_mask=True,
+        )
         if panel_path is None:
             LOGGER.warning("No IDRISI rasters were available for panel generation in %s.", idrisi_directory)
         else:
@@ -507,7 +524,7 @@ def main() -> None:
             geotiff_directory,
             len(converted),
         )
-        _refresh_idrisi_panel(idrisi_directory, progress)
+        _refresh_idrisi_panel(idrisi_directory, progress, raw_settings, geotiff_directory)
 
     if args.sync_rasters:
         if drive_service is None:
@@ -530,7 +547,7 @@ def main() -> None:
             progress.update("IDRISI conversion", "Ready", f"{len(converted)} raster(s) converted during this run")
             if converted:
                 LOGGER.info("Converted %d GeoTIFF(s) to IDRISI format in %s.", len(converted), idrisi_directory)
-            _refresh_idrisi_panel(idrisi_directory, progress)
+            _refresh_idrisi_panel(idrisi_directory, progress, raw_settings, geotiff_directory)
             audit, _state_path, _audit_path = _refresh_pipeline_audit(
                 project_settings,
                 expected_csvs,
@@ -586,7 +603,7 @@ def main() -> None:
                     geotiff_directory,
                     len(converted),
                 )
-                _refresh_idrisi_panel(idrisi_directory, progress)
+                _refresh_idrisi_panel(idrisi_directory, progress, raw_settings, geotiff_directory)
                 missing_products = _missing_expected_rasters(mosaics, project_settings.scenarios)
             if not local_tiles or missing_products:
                 if not local_tiles:
@@ -688,7 +705,7 @@ def main() -> None:
             progress.update("IDRISI conversion", "Ready", f"{len(converted)} raster(s) converted during this run")
             if converted:
                 LOGGER.info("Converted %d GeoTIFF(s) to IDRISI format in %s.", len(converted), idrisi_directory)
-            _refresh_idrisi_panel(idrisi_directory, progress)
+            _refresh_idrisi_panel(idrisi_directory, progress, raw_settings, geotiff_directory)
         results = analyze_exported_tables(
             table_directory=table_directory,
             scenario_labels=scenario_labels,
