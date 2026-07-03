@@ -27,6 +27,7 @@ from src.mapbiomas_ctrees.pipeline_state import audit_pipeline_state
 from src.mapbiomas_ctrees.raster_naming import raster_semantic_key
 from src.mapbiomas_ctrees.raster_exports import (
     _IDRISI_LEGENDS,
+    _IDRISI_NODATA,
     RasterProduct,
     _idrisi_pal_text,
     _idrisi_smp_bytes,
@@ -284,6 +285,40 @@ class PipelineQualityTests(unittest.TestCase):
             second = convert_geotiffs_to_idrisi(geotiff_dir, idrisi_dir)
             self.assertEqual(second, [])
             self.assertEqual(rst.stat().st_mtime, first_mtime)
+
+    def test_idrisi_conversion_masks_pixels_outside_study_area(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            geotiff_dir = root / "geotiff"
+            idrisi_dir = root / "idrisi"
+            geotiff_dir.mkdir()
+            transform = from_origin(0, 60, 30, 30)
+            raster_data = np.array([[1, 1], [0, 0]], dtype=np.int16)
+            valid_mask = np.array([[1, 0], [1, 0]], dtype=np.int16)
+            for name, data in {
+                "Tiny_Test_EPSG_5880_30m": raster_data,
+                "Valid_Analysis_Mask_30m_EPSG_5880_30m": valid_mask,
+            }.items():
+                with rasterio.open(
+                    geotiff_dir / f"{name}.tif",
+                    "w",
+                    driver="GTiff",
+                    height=2,
+                    width=2,
+                    count=1,
+                    dtype="int16",
+                    crs="EPSG:5880",
+                    transform=transform,
+                    nodata=_IDRISI_NODATA,
+                ) as dataset:
+                    dataset.write(data, 1)
+
+            convert_geotiffs_to_idrisi(geotiff_dir, idrisi_dir)
+
+            values = np.fromfile(idrisi_dir / "Tiny_Test_EPSG_5880_30m.rst", dtype=np.int16).reshape(2, 2)
+            self.assertTrue(np.array_equal(values, np.array([[1, _IDRISI_NODATA], [0, _IDRISI_NODATA]], dtype=np.int16)))
+            rdc = (idrisi_dir / "Tiny_Test_EPSG_5880_30m.rdc").read_text(encoding="ascii")
+            self.assertIn("Outside study area set to missing data", rdc)
 
     def test_idrisi_conversion_writes_mapbiomas_lulc_palette(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

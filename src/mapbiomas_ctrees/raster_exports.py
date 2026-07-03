@@ -105,7 +105,7 @@ def _geotiff_export_kwargs(product: RasterProduct, settings: dict[str, Any], fol
         raise RuntimeError("GeoTIFF export requires explicit grid.crs and grid.scale_m settings.")
 
     return {
-        "image": product.image,
+        "image": product.image.unmask(_IDRISI_NODATA).toInt16(),
         "description": _with_projection_suffix(product.name, settings),
         "folder": folder,
         "fileNamePrefix": _with_projection_suffix(product.name, settings),
@@ -114,7 +114,7 @@ def _geotiff_export_kwargs(product: RasterProduct, settings: dict[str, Any], fol
         "crs": str(crs),
         "maxPixels": int(grid.get("max_pixels") or earth_engine.get("max_pixels") or 10_000_000_000_000),
         "fileFormat": "GeoTIFF",
-        "formatOptions": {"cloudOptimized": False},
+        "formatOptions": {"cloudOptimized": False, "noData": _IDRISI_NODATA},
     }
 
 
@@ -333,10 +333,14 @@ def build_raster_products(
     products.extend(_forest_to_nonforest_products(settings, prepared, organized))
     products.extend(_udef_a_fcbm_products(settings, prepared, organized))
     products.extend(_dmjss_mb_products(settings, prepared, organized))
-    return _normalize_raster_products(products, settings)
+    return _normalize_raster_products(products, settings, organized.valid_analysis_mask)
 
 
-def _normalize_raster_products(products: list[RasterProduct], settings: dict[str, Any]) -> list[RasterProduct]:
+def _normalize_raster_products(
+    products: list[RasterProduct],
+    settings: dict[str, Any],
+    valid_mask: ee.Image | None = None,
+) -> list[RasterProduct]:
     """Return raster products with one canonical EPSG/resolution suffix."""
     normalized: list[RasterProduct] = []
     seen: set[str] = set()
@@ -346,7 +350,10 @@ def _normalize_raster_products(products: list[RasterProduct], settings: dict[str
             LOGGER.debug("Skipping duplicate raster product after normalization: %s", name)
             continue
         seen.add(name)
-        normalized.append(RasterProduct(name=name, image=product.image, description=product.description))
+        image = product.image
+        if valid_mask is not None and image is not None:
+            image = image.updateMask(valid_mask)
+        normalized.append(RasterProduct(name=name, image=image, description=product.description))
     return normalized
 
 
@@ -754,13 +761,15 @@ def generate_idrisi_raster_panel(
     title = f"IDRISI Raster Map Panel ({len(rst_paths)} maps)"
     draw.text((margin, 24), title, fill=(116, 0, 0), font=title_font)
     draw.text((margin, 58), str(idrisi_directory), fill=(70, 70, 70), font=small_font)
+    study_area_mask = _study_area_mask_idrisi(idrisi_directory)
 
     for index, rst_path in enumerate(rst_paths):
         row, col = divmod(index, columns)
         x = margin + col * (cell_width + gap)
         y = margin + title_height + row * (cell_height + gap)
         metadata = _read_idrisi_rdc(rst_path.with_suffix(".rdc"))
-        image = _render_idrisi_thumbnail(rst_path, metadata, thumbnail_size)
+        mask_path = None if study_area_mask is not None and study_area_mask.resolve() == rst_path.resolve() else study_area_mask
+        image = _render_idrisi_thumbnail(rst_path, metadata, thumbnail_size, mask_path)
         label = metadata.get("file title") or _idrisi_title(rst_path.stem)
         draw.rounded_rectangle(
             (x - 8, y - 8, x + cell_width + 8, y + cell_height + 8),
@@ -801,13 +810,14 @@ def convert_geotiffs_to_idrisi(geotiff_directory: Path, idrisi_directory: Path) 
     if palettes:
         LOGGER.info("Created or refreshed %d IDRISI palette file(s) in %s.", len(palettes), idrisi_directory)
 
+    study_area_mask = _study_area_mask_geotiff(geotiff_directory)
     written = []
     for geotiff in _iter_target_geotiff_files(geotiff_directory):
         try:
-            if _idrisi_outputs_current(geotiff, idrisi_directory):
+            if _idrisi_outputs_current(geotiff, idrisi_directory, study_area_mask):
                 LOGGER.debug("Skipping current IDRISI raster: %s", geotiff.stem)
                 continue
-            written.append(_write_idrisi_pair(geotiff, idrisi_directory))
+            written.append(_write_idrisi_pair(geotiff, idrisi_directory, study_area_mask))
         except Exception:
             _cleanup_idrisi_temporaries(geotiff, idrisi_directory)
             LOGGER.exception("Failed to convert %s to IDRISI format; skipping.", geotiff.name)
@@ -901,6 +911,26 @@ def _iter_geotiff_files(directory: Path) -> list[Path]:
 
 def _iter_target_geotiff_files(directory: Path) -> list[Path]:
     return [path for path in _iter_geotiff_files(directory) if _is_target_geotiff(path)]
+
+
+def _study_area_mask_geotiff(geotiff_directory: Path) -> Path | None:
+    candidates: list[Path] = []
+    for pattern in ("UDefA_ValidMask*.tif", "Valid_Analysis_Mask*.tif", "*Valid*Mask*.tif"):
+        candidates.extend(sorted(geotiff_directory.glob(pattern)))
+    for path in candidates:
+        if path.is_file() and _is_target_geotiff(path):
+            return path
+    return None
+
+
+def _study_area_mask_idrisi(idrisi_directory: Path) -> Path | None:
+    candidates: list[Path] = []
+    for pattern in ("UDefA_ValidMask*.rst", "Valid_Analysis_Mask*.rst", "*Valid*Mask*.rst"):
+        candidates.extend(sorted(idrisi_directory.glob(pattern)))
+    for path in candidates:
+        if path.is_file() and path.with_suffix(".rdc").exists():
+            return path
+    return None
 
 
 def _remove_non_target_geotiffs(directory: Path) -> None:
@@ -1493,7 +1523,7 @@ _IDRISI_LEGENDS: dict[str, list[tuple[int, str, str]]] = {
         (4, "Forest Gain", _IDRISI_GAIN_COLOR),
     ],
     "valid_mask": [
-        (0, "Outside Analysis Area", _IDRISI_NO_CHANGE_COLOR),
+        (0, "Outside Analysis Area", _IDRISI_NO_DATA_COLOR),
         (1, "Valid Analysis Area", _IDRISI_FOREST_COLOR),
     ],
     "loss_agreement3": [
@@ -1730,6 +1760,14 @@ def _rdc_has_current_title(rdc_path: Path, title: str) -> bool:
     return f"file title  : {title}" in rdc_text
 
 
+def _rdc_has_line(rdc_path: Path, line: str) -> bool:
+    try:
+        rdc_text = rdc_path.read_text(encoding="ascii")
+    except Exception:
+        return False
+    return line in rdc_text
+
+
 def _read_idrisi_rdc(rdc_path: Path) -> dict[str, str]:
     metadata: dict[str, str] = {}
     try:
@@ -1781,7 +1819,12 @@ def _read_idrisi_color_table(stem_path: Path) -> np.ndarray | None:
     return None
 
 
-def _render_idrisi_thumbnail(rst_path: Path, metadata: dict[str, str], thumbnail_size: tuple[int, int]):
+def _render_idrisi_thumbnail(
+    rst_path: Path,
+    metadata: dict[str, str],
+    thumbnail_size: tuple[int, int],
+    study_area_mask_path: Path | None = None,
+):
     from PIL import Image
 
     width = _idrisi_metadata_int(metadata, "columns")
@@ -1796,9 +1839,20 @@ def _render_idrisi_thumbnail(rst_path: Path, metadata: dict[str, str], thumbnail
     color_table = _read_idrisi_color_table(rst_path)
     flag_value = _idrisi_metadata_int(metadata, "flag value", _IDRISI_NODATA)
     valid_mask = sample != flag_value
+    if study_area_mask_path is not None:
+        study_metadata = _read_idrisi_rdc(study_area_mask_path.with_suffix(".rdc"))
+        study_width = _idrisi_metadata_int(study_metadata, "columns")
+        study_height = _idrisi_metadata_int(study_metadata, "rows")
+        if study_width == width and study_height == height:
+            study_raster = np.memmap(study_area_mask_path, dtype=np.int16, mode="r", shape=(height, width))
+            study_sample = np.asarray(study_raster[::stride, ::stride])
+            valid_mask = valid_mask & (study_sample == 1)
 
-    if color_table is not None and sample.size and sample.min() >= 0 and sample.max() <= 255:
-        rgb = color_table[sample.astype(np.uint8)]
+    valid_sample = sample[valid_mask]
+    if color_table is not None and valid_sample.size and valid_sample.min() >= 0 and valid_sample.max() <= 255:
+        safe_sample = sample.copy()
+        safe_sample[~valid_mask] = 0
+        rgb = color_table[safe_sample.astype(np.uint8)]
         rgb = rgb.copy()
         rgb[~valid_mask] = (0, 0, 0)
     else:
@@ -1872,6 +1926,7 @@ _IDRISI_BLOCK_ROWS = 2048
 _IDRISI_TARGET_CRS = CRS.from_epsg(5880)
 _IDRISI_TARGET_RESOLUTION_M = 30.0
 _IDRISI_NODATA = -9999
+_IDRISI_STUDY_AREA_MASK_LINEAGE = "lineage     : Outside study area set to missing data"
 
 
 def _needs_reproject(dataset: rasterio.DatasetReader) -> bool:
@@ -1900,6 +1955,38 @@ def _dataset_is_target_grid(dataset: rasterio.DatasetReader, tolerance: float = 
         abs(abs(dataset.transform.a) - _IDRISI_TARGET_RESOLUTION_M) <= tolerance
         and abs(abs(dataset.transform.e) - _IDRISI_TARGET_RESOLUTION_M) <= tolerance
     )
+
+
+def _dataset_grid_matches(
+    dataset: rasterio.DatasetReader,
+    width: int,
+    height: int,
+    transform: rasterio.transform.Affine,
+    tolerance: float = 1e-6,
+) -> bool:
+    return (
+        dataset.width == width
+        and dataset.height == height
+        and all(abs(a - b) <= tolerance for a, b in zip(dataset.transform, transform))
+    )
+
+
+def _open_matching_study_area_mask(
+    study_area_mask_path: Path | None,
+    dataset: rasterio.DatasetReader,
+) -> rasterio.DatasetReader | None:
+    if study_area_mask_path is None:
+        return None
+    mask_dataset = rasterio.open(study_area_mask_path)
+    if _dataset_grid_matches(mask_dataset, dataset.width, dataset.height, dataset.transform):
+        return mask_dataset
+    mask_dataset.close()
+    LOGGER.warning(
+        "Study-area mask %s does not match %s grid; outside-area masking was skipped for this raster.",
+        study_area_mask_path.name,
+        Path(dataset.name).name,
+    )
+    return None
 
 
 def _reproject_to_target(dataset: rasterio.DatasetReader) -> tuple[np.ndarray, rasterio.transform.Affine, int, int]:
@@ -1937,7 +2024,7 @@ def _reproject_to_target(dataset: rasterio.DatasetReader) -> tuple[np.ndarray, r
     return result, dst_transform, dst_width, dst_height
 
 
-def _write_idrisi_pair(geotiff_path: Path, idrisi_directory: Path) -> Path:
+def _write_idrisi_pair(geotiff_path: Path, idrisi_directory: Path, study_area_mask_path: Path | None = None) -> Path:
     idrisi_directory.mkdir(parents=True, exist_ok=True)
     rst_path = idrisi_directory / f"{geotiff_path.stem}.rst"
     rdc_path = idrisi_directory / f"{geotiff_path.stem}.rdc"
@@ -1950,48 +2037,67 @@ def _write_idrisi_pair(geotiff_path: Path, idrisi_directory: Path) -> Path:
     for temporary in (rst_tmp, rdc_tmp, pal_tmp, smp_tmp):
         temporary.unlink(missing_ok=True)
 
+    apply_study_area_mask = study_area_mask_path is not None and study_area_mask_path.resolve() != geotiff_path.resolve()
     with rasterio.open(geotiff_path) as dataset:
         nodata = dataset.nodata if dataset.nodata is not None else _IDRISI_NODATA
         nodata_i16 = np.int16(nodata)
+        study_area_mask_dataset = _open_matching_study_area_mask(study_area_mask_path, dataset) if apply_study_area_mask else None
 
-        if _needs_reproject(dataset):
-            arr2d, transform, width, height = _reproject_to_target(dataset)
-            arr2d[arr2d == nodata_i16] = nodata_i16
-            arr_min_v = int(arr2d[arr2d != nodata_i16].min()) if (arr2d != nodata_i16).any() else 0
-            arr_max_v = int(arr2d[arr2d != nodata_i16].max()) if (arr2d != nodata_i16).any() else 0
-            arr2d.tofile(rst_tmp)
-        else:
-            transform = dataset.transform
-            width = dataset.width
-            height = dataset.height
-            arr_min_v: int | None = None
-            arr_max_v: int | None = None
-            with open(rst_tmp, "wb") as rst_file:
-                for row_start in range(0, height, _IDRISI_BLOCK_ROWS):
-                    window_height = min(_IDRISI_BLOCK_ROWS, height - row_start)
-                    window = Window(0, row_start, width, window_height)
-                    block = np.empty((window_height, width), dtype=np.int16)
-                    mask_values = np.empty((window_height, width), dtype=np.uint8)
-                    with warnings.catch_warnings():
-                        warnings.filterwarnings(
-                            "ignore",
-                            message="Setting the shape on a NumPy array has been deprecated.*",
-                            category=DeprecationWarning,
-                        )
-                        dataset.read(1, window=window, out=block)
-                        dataset.read_masks(1, window=window, out=mask_values)
-                    mask = mask_values == 0
-                    block[mask] = nodata_i16
-                    block.tofile(rst_file)
-                    valid_block = block[~mask]
-                    if valid_block.size:
-                        block_min = int(valid_block.min())
-                        block_max = int(valid_block.max())
-                        arr_min_v = block_min if arr_min_v is None else min(arr_min_v, block_min)
-                        arr_max_v = block_max if arr_max_v is None else max(arr_max_v, block_max)
-            if arr_min_v is None:
-                arr_min_v = 0
-                arr_max_v = 0
+        try:
+            if _needs_reproject(dataset):
+                arr2d, transform, width, height = _reproject_to_target(dataset)
+                if study_area_mask_dataset is not None and _dataset_grid_matches(study_area_mask_dataset, width, height, transform):
+                    study_mask = study_area_mask_dataset.read(1) != 1
+                    arr2d[study_mask] = nodata_i16
+                arr2d[arr2d == nodata_i16] = nodata_i16
+                valid = arr2d != nodata_i16
+                arr_min_v = int(arr2d[valid].min()) if valid.any() else 0
+                arr_max_v = int(arr2d[valid].max()) if valid.any() else 0
+                arr2d.tofile(rst_tmp)
+            else:
+                transform = dataset.transform
+                width = dataset.width
+                height = dataset.height
+                arr_min_v: int | None = None
+                arr_max_v: int | None = None
+                with open(rst_tmp, "wb") as rst_file:
+                    for row_start in range(0, height, _IDRISI_BLOCK_ROWS):
+                        window_height = min(_IDRISI_BLOCK_ROWS, height - row_start)
+                        window = Window(0, row_start, width, window_height)
+                        block = np.empty((window_height, width), dtype=np.int16)
+                        mask_values = np.empty((window_height, width), dtype=np.uint8)
+                        with warnings.catch_warnings():
+                            warnings.filterwarnings(
+                                "ignore",
+                                message="Setting the shape on a NumPy array has been deprecated.*",
+                                category=DeprecationWarning,
+                            )
+                            dataset.read(1, window=window, out=block)
+                            dataset.read_masks(1, window=window, out=mask_values)
+                        mask = mask_values == 0
+                        if study_area_mask_dataset is not None:
+                            with warnings.catch_warnings():
+                                warnings.filterwarnings(
+                                    "ignore",
+                                    message="Setting the shape on a NumPy array has been deprecated.*",
+                                    category=DeprecationWarning,
+                                )
+                                study_mask = study_area_mask_dataset.read(1, window=window) != 1
+                            mask = mask | study_mask
+                        block[mask] = nodata_i16
+                        block.tofile(rst_file)
+                        valid_block = block[block != nodata_i16]
+                        if valid_block.size:
+                            block_min = int(valid_block.min())
+                            block_max = int(valid_block.max())
+                            arr_min_v = block_min if arr_min_v is None else min(arr_min_v, block_min)
+                            arr_max_v = block_max if arr_max_v is None else max(arr_max_v, block_max)
+                if arr_min_v is None:
+                    arr_min_v = 0
+                    arr_max_v = 0
+        finally:
+            if study_area_mask_dataset is not None:
+                study_area_mask_dataset.close()
 
         x_min = transform.c
         x_max = transform.c + transform.a * width
@@ -2032,6 +2138,7 @@ def _write_idrisi_pair(geotiff_path: Path, idrisi_directory: Path) -> Path:
                     f"flag value  : {int(nodata)}",
                     "flag def'n  : missing data",
                 ]
+                + ([_IDRISI_STUDY_AREA_MASK_LINEAGE] if apply_study_area_mask else [])
                 + legend_lines
             )
             + "\n",
@@ -2066,15 +2173,24 @@ def _write_idrisi_pair(geotiff_path: Path, idrisi_directory: Path) -> Path:
     return rst_path
 
 
-def _idrisi_outputs_current(geotiff_path: Path, idrisi_directory: Path) -> bool:
+def _idrisi_outputs_current(
+    geotiff_path: Path,
+    idrisi_directory: Path,
+    study_area_mask_path: Path | None = None,
+) -> bool:
     rst_path = idrisi_directory / f"{geotiff_path.stem}.rst"
     rdc_path = idrisi_directory / f"{geotiff_path.stem}.rdc"
     pal_path = idrisi_directory / f"{geotiff_path.stem}.pal"
     smp_path = idrisi_directory / f"{geotiff_path.stem}.smp"
     if not rst_path.exists() or not rdc_path.exists():
         return False
+    apply_study_area_mask = study_area_mask_path is not None and study_area_mask_path.resolve() != geotiff_path.resolve()
     source_mtime = geotiff_path.stat().st_mtime
+    if apply_study_area_mask:
+        source_mtime = max(source_mtime, study_area_mask_path.stat().st_mtime)
     if rst_path.stat().st_mtime < source_mtime or rdc_path.stat().st_mtime < source_mtime:
+        return False
+    if apply_study_area_mask and not _rdc_has_line(rdc_path, _IDRISI_STUDY_AREA_MASK_LINEAGE):
         return False
     with rasterio.open(geotiff_path) as dataset:
         width, height = _idrisi_expected_dimensions(dataset)
